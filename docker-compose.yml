@@ -1,0 +1,85 @@
+# Backline stack: db (Postgres 16 + pgvector) → init (migrations, later seed/embed)
+# → api (FastAPI) + ui (Next.js). All variables have defaults — a bare
+# `docker compose up` works with no .env file; compose reads .env automatically
+# for overrides.
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-backline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-backline}
+      POSTGRES_DB: ${POSTGRES_DB:-backline}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-backline} -d ${POSTGRES_DB:-backline}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # One-shot: runs migrations (Phase 1 adds seed, Phase 3 adds embed), then exits.
+  init:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    environment: &backline-env
+      DATABASE_URL: postgresql://${POSTGRES_USER:-backline}:${POSTGRES_PASSWORD:-backline}@db:5432/${POSTGRES_DB:-backline}
+      WORLD_SEED: ${WORLD_SEED:-20260805}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_COMPAT_BASE_URL: ${OPENAI_COMPAT_BASE_URL:-}
+      RERANK: ${RERANK:-on}
+      RUN_BUDGET_USD: ${RUN_BUDGET_USD:-0.50}
+      EVAL_BUDGET_USD: ${EVAL_BUDGET_USD:-5.00}
+    command: ["uv", "run", "--no-sync", "python", "-m", "backline.db.migrate"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    environment: *backline-env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      # /readyz = process up AND Postgres reachable; "healthy api" means wired.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz', timeout=4)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  ui:
+    build:
+      context: ui
+    ports:
+      - "${UI_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  dbdata:
