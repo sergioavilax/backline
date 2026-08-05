@@ -1,0 +1,28 @@
+# env / secrets
+.env
+*.env.local
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+
+# node / next
+node_modules/
+ui/.next/
+ui/out/
+ui/next-env.d.ts
+*.tsbuildinfo
+
+# data artifacts (generated worlds, traces, embeddings)
+data/
+
+# editor / os
+.idea/
+.vscode/
+.DS_Store

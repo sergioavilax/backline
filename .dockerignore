@@ -1,0 +1,13 @@
+# api image build context (repo root) — keep it lean
+.git
+.venv
+ui
+node_modules
+data
+docs
+.mypy_cache
+.pytest_cache
+.ruff_cache
+__pycache__
+*.py[cod]
+.env

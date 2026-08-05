@@ -1,0 +1,90 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-type:
+    name: python lint + typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+
+  test:
+    name: pytest (postgres service)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: backline
+          POSTGRES_PASSWORD: backline
+          POSTGRES_DB: backline
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U backline -d backline"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://backline:backline@localhost:5432/backline
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run pytest -v
+
+  ui:
+    name: ui lint + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm build
+
+  # Stub until Phase 5. The real job runs the eval suite on the self-hosted
+  # runner and fails on category regressions >3 pts or T2 violations. The
+  # secret check lives at step level (secrets aren't available in job-level
+  # `if`), so forks and keyless PRs stay green.
+  eval-regression:
+    name: eval regression (stubbed)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for API key
+        id: keycheck
+        run: |
+          if [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "have_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_key=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Eval regression (Phase 5 makes this real)
+        if: steps.keycheck.outputs.have_key == 'true'
+        run: echo "ANTHROPIC_API_KEY present — Phase 5 will run 'evals run --suite core' here with regression thresholds."
+      - name: Skipped (no key)
+        if: steps.keycheck.outputs.have_key == 'false'
+        run: echo "No ANTHROPIC_API_KEY secret available — eval regression stub skipped (expected on forks)."

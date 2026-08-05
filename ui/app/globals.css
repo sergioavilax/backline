@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+/* Phase 0 placeholder styling only. The real design tokens (graphite base,
+   amber accent, money-in-mono) land in Phase 6 per docs/UI_DIRECTION.md. */
+:root {
+  --background: #0b0c0e;
+  --foreground: #e6e7e9;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+}

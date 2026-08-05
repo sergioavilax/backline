@@ -1,0 +1,13 @@
+# This repo is developed under WSL2 — force LF everywhere so scripts, SQL, and
+# lockfiles behave identically in containers, CI, and on Windows checkouts.
+* text=auto eol=lf
+
+# Binary assets: never touch line endings.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
