@@ -942,3 +942,123 @@ Future targeted re-runs can refresh single categories through the same door,
 always leaving a complete, provenanced entry. The gate itself is unchanged; a
 single full-run summary still flows through `gate --write-baseline` as before
 (and `compose` with one summary doubles as a completeness check for it).
+
+## D-024 — Keyless demo mode: scripted chat through the real platform (Phase 6)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** Phase 6's DoD demands all four surfaces functional on a cold
+clone and a Playwright smoke that drives "seeded chat with mock streaming →
+approve a batch" in CI — where invariant 8 forbids requiring an API key. A
+chat surface that only works with a key would fail both; a canned-JSON fake
+would demo nothing real.
+
+**Decisions.**
+
+- **With no provider configured, the API serves demo mode**: per message,
+  `backline/api/demo.py` builds a deterministic MockProvider script (the
+  eval-smoke precedent — only the model is scripted) and runs it through the
+  production stack: the router runs as a traced run, the agent loop executes
+  the real tools against seeded Postgres (retrieval, read-only SQL, anomaly
+  scan, allocations, `submit_batch`), every span hits the tracer, and the
+  Review Queue receives a real proposed batch. `ANTHROPIC_API_KEY` (or an
+  OpenAI-compat endpoint) flips the same chat path to live agents.
+- **Demo prose is computed from the label schema, never `truth`**: rates
+  resolve through `royaltycalc.resolve_terms`, analytics rows come from
+  executing the exact SQL handed to the tool, allocations from
+  `compute_ledger_slice` with scan-suggested exclusions applied. The demo
+  batch covers the top artists by period gross and its reviewer note says
+  exactly that.
+- **Demo runs are labeled**, not disguised: route events and message meta
+  carry `demo: true`, run models are `mock-sonnet`/`mock-haiku`, the UI rail
+  shows a "demo mode" badge sourced from `/meta`, and each demo answer is
+  tagged "demo script" in the transcript.
+- **The model's text never claims a batch id it cannot know**: the scripted
+  reconciler reply omits the `BATCH:` wrap-up line (an eval-scoring contract,
+  not a chat contract); chat resolves the real id from
+  `staging.statement_batches.submitted_by_run` — for live runs too, so a
+  model typo in the wrap-up line can never mislabel the batch link.
+
+**Consequence.** `docker compose up` with no key demos the whole product
+loop honestly; CI's Playwright smoke exercises SSE, tracing, staging writes,
+and the review transition end to end, keylessly.
+
+## D-025 — Review actions: guarded transitions; approval promotes staged lines (Phase 6)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** Invariant 5 says agents propose and humans approve, and "nothing
+promotes without an explicit approval action" — but through Phase 5 nothing
+defined what promotion concretely *does*. Meanwhile `ingest_statement`'s
+contract (Phase 3) left fresh-drop statements `received` with their parsed
+lines in `staging.ingested_lines`, "promotion is the Phase 6 review action."
+
+**Decisions.**
+
+- **Transitions are guarded SQL**: approve/reject `UPDATE … WHERE status =
+  'proposed'` inside one transaction; the loser of a concurrent review gets
+  409, and a reviewed batch can never be re-reviewed. Reject requires a
+  non-empty note at the schema level — "no" with no reason is not a review.
+  Reviewer action, note, and timestamp land in `summary.review`.
+- **Approval promotes at three levels**: the batch flips to `approved`; the
+  period's staged lines copy into `label.statement_lines` (ids continue from
+  `max(id)` — datagen only writes label lines during a full truncating
+  reseed, so the sequence cannot collide); their statements flip
+  `received → ingested`; the promoted staged rows are deleted (they now live
+  in label, and leaving them would double-count in any staged-inclusive
+  read). Rejection leaves staged lines in place for a corrected batch.
+- **The API's `/review/batches/{id}` serves the reviewer everything the
+  decision needs**: allocations with per-artist ledger detail, flags ordered
+  by severity with the referenced statement lines resolved as evidence, and
+  a "what changes if approved" promotion preview computed from the same
+  queries promotion runs.
+
+**Consequence.** The Reconciler's fresh-drop story completes: emit-period →
+ingest → match → scan → submit → human approves → the period's lines are
+label state and analytics include them. No agent-reachable path can do any
+of that.
+
+## D-026 — Chat streams lifecycle events; the span feed merges pubsub with DB polling (Phase 6)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** BUILD_PLAN §6 promises a chat with streaming answers and a live
+Trace Inspector over SSE. The Phase 2 runtime returns complete provider
+results (no token streaming crosses the Provider boundary), and runs can be
+driven by processes other than the API (CLI harness, eval runner).
+
+**Decisions.**
+
+- **Chat SSE is lifecycle-level**: `accepted → routed → run_started → final`
+  (or `clarify`), then `done`. The live feel comes from the span stream —
+  `run_started` carries a pre-assigned run id (additive `run_id` param on
+  `AgentRuntime.run`) so the client subscribes from span one and watches the
+  run happen. Token-level streaming would need to cross the Provider
+  abstraction and is deferred until something needs it; no event pretends
+  otherwise.
+- **Chat turns run in background tasks**; the HTTP generator only drains an
+  event queue. A dropped client never kills a run mid-flight — a batch
+  submit lands completely or not at all, whoever is watching.
+- **`/runs/{id}/spans/stream` merges two sources**: in-proc pubsub for runs
+  executing inside the API (instant), and a 2s Postgres poll fallback for
+  runs driven elsewhere (their spans exist only as rows; `PostgresSink`
+  inserts on span start, so in-flight spans are visible). Protocol:
+  `snapshot`, then `span_start`/`span_end`/`run_end` upserts; clients upsert
+  by span id and never downgrade an ended span. Read-only, so it runs inline
+  and dies with the client — unlike chat.
+- **Session context is a SQL window with deterministic elision**: the last
+  20 turns load from `app.messages`; older history is reported via
+  `SessionMemory.note_elided` (additive), not silently dropped. The D-014
+  summarizer hook stays unwired in the API: it would summarize from scratch
+  every turn (nothing persists the fold), demo mode has no model for it, and
+  keyed vs keyless context assembly would diverge. Wiring it properly needs
+  a persisted-summary column — future work, recorded here.
+- **JSONB discipline on the shared pool**: the API pool keeps asyncpg's
+  default codec (JSONB as `str`) because the runtime tools share the pool
+  and already write `canonical_dumps` + `::jsonb`; API read sites decode via
+  one `jload` helper. A custom codec would double-encode every tool write.
+
+**Consequence.** The signature surface is honest: what the Trace Inspector
+shows live is exactly what persisted, chat answers arrive with their full
+provenance (route decision, run id, cost, citations), and nothing about the
+streaming design depends on which process ran the agent.
