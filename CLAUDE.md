@@ -56,17 +56,24 @@ before doing anything; this file is the operational summary that governs every s
   judgment call that isn't already specified by BUILD_PLAN.
 - Phase log: `docs/PHASE_LOG.md` — append at the end of every phase.
 - Job-spec traceability: `docs/TRACEABILITY.md`.
-- Make targets: `make help` (`up`, `test`, `lint`, `typecheck`, `doctor`; `seed`/`embed`/
-  `eval-smoke`/`corpus-tokens` are phase-gated stubs until their phase ships).
+- Make targets: `make help` (`up`, `test`, `lint`, `typecheck`, `doctor`, `seed`,
+  `emit-period`, `corpus-tokens`; `embed`/`eval-smoke` are phase-gated stubs until their
+  phase ships).
 
 ## Commands
 
 ```bash
 make doctor      # environment sanity (docker, ports, env, line endings)
-make up          # compose stack: db + init(migrations) + api + ui
+make up          # compose stack: db + init(migrations+seed) + api + ui
 uv sync          # local Python env
+make seed        # build the deterministic world into Postgres + ./data (< 3 min)
 make test        # pytest — Postgres tests skip unless DATABASE_URL is set
 make lint        # ruff check + format --check
 make typecheck   # mypy --strict
 cd ui && pnpm dev
 ```
+
+World determinism: `tests/golden/world_fingerprint.json` pins the seeded world's content
+hash. If a PR intentionally changes generation, regenerate it via
+`python -m datagen fingerprint --files > tests/golden/world_fingerprint.json` and say so
+in the PR; an unexplained golden diff means the answer key silently moved.

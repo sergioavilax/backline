@@ -15,6 +15,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 # Project code.
 COPY backline ./backline
+COPY datagen ./datagen
 COPY migrations ./migrations
 RUN uv sync --frozen --no-dev
 

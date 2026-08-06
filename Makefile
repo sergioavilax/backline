@@ -1,6 +1,6 @@
 # Backline — developer entry points. `make help` lists targets.
 .DEFAULT_GOAL := help
-.PHONY: help up down logs ps test lint typecheck fmt doctor seed embed eval-smoke corpus-tokens
+.PHONY: help up down logs ps test lint typecheck fmt doctor seed emit-period embed eval-smoke corpus-tokens
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -35,15 +35,18 @@ fmt: ## Auto-format Python
 doctor: ## Verify local environment (docker, ports, env, WSL/line endings)
 	python3 scripts/doctor.py
 
-# ── Phase-gated targets (stubs fail loudly until their phase ships) ──────────
-seed: ## Build the synthetic world (Phase 1)
-	@echo "make seed: not implemented yet — ships in Phase 1 (datagen)." >&2; exit 1
+seed: ## Build the deterministic Foldback Records world (DB + /data), < 3 min
+	uv run python -m datagen seed
 
+emit-period: ## Drop a new statement month into data/inbox, e.g. make emit-period PERIOD=2026-07
+	uv run python -m datagen emit-period $(PERIOD)
+
+corpus-tokens: ## Print corpus token counts (the scale-claim evidence)
+	uv run python -m datagen corpus-tokens
+
+# ── Phase-gated targets (stubs fail loudly until their phase ships) ──────────
 embed: ## Build contract-chunk embeddings (Phase 3)
 	@echo "make embed: not implemented yet — ships in Phase 3 (RAG)." >&2; exit 1
 
 eval-smoke: ## Keyless MockProvider eval plumbing test (Phase 5)
 	@echo "make eval-smoke: not implemented yet — ships in Phase 5 (evals)." >&2; exit 1
-
-corpus-tokens: ## Print corpus token count (Phase 1)
-	@echo "make corpus-tokens: not implemented yet — ships in Phase 1 (datagen)." >&2; exit 1

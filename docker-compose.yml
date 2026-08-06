@@ -25,7 +25,7 @@ services:
       retries: 12
       start_period: 10s
 
-  # One-shot: runs migrations (Phase 1 adds seed, Phase 3 adds embed), then exits.
+  # One-shot: migrations, then a skip-if-present world seed (Phase 3 adds embed).
   init:
     build:
       context: .
@@ -33,12 +33,23 @@ services:
     environment: &backline-env
       DATABASE_URL: postgresql://${POSTGRES_USER:-backline}:${POSTGRES_PASSWORD:-backline}@db:5432/${POSTGRES_DB:-backline}
       WORLD_SEED: ${WORLD_SEED:-20260805}
+      DATA_DIR: /data
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_COMPAT_BASE_URL: ${OPENAI_COMPAT_BASE_URL:-}
       RERANK: ${RERANK:-on}
       RUN_BUDGET_USD: ${RUN_BUDGET_USD:-0.50}
       EVAL_BUDGET_USD: ${EVAL_BUDGET_USD:-5.00}
-    command: ["uv", "run", "--no-sync", "python", "-m", "backline.db.migrate"]
+    command:
+      [
+        "uv",
+        "run",
+        "--no-sync",
+        "sh",
+        "-c",
+        "python -m backline.db.migrate && python -m datagen seed --if-empty",
+      ]
+    volumes:
+      - appdata:/data
     depends_on:
       db:
         condition: service_healthy
@@ -50,6 +61,8 @@ services:
     environment: *backline-env
     ports:
       - "${API_PORT:-8000}:8000"
+    volumes:
+      - appdata:/data
     depends_on:
       db:
         condition: service_healthy
@@ -83,3 +96,4 @@ services:
 
 volumes:
   dbdata:
+  appdata:
