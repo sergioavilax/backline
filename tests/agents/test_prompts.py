@@ -46,3 +46,7 @@ def test_core_rules_present() -> None:
     assert "cannot approve" in reconciler
     router = load_prompt("router").text
     assert "route" in router and "clarify" in router
+    # Phase 6 verification: terms-language vs revenue-language examples ("sync rate"
+    # → counsel, "how much did X make" → analyst) must stay in the prompt.
+    assert "sync rate" in router
+    assert "How much" in router

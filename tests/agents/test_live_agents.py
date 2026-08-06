@@ -145,6 +145,10 @@ async def test_live_router_targets(live: LiveStack) -> None:
         f"What does {artist}'s contract say about sync placements?": "counsel",
         "Top 5 territories by streaming revenue in Q1 2026?": "analyst",
         "A new kinetic statement landed — reconcile it and submit the batch.": "reconciler",
+        # Phase 6 verification misroute: "rate" is terms language (a clause answers
+        # it), even though it sounds numeric; the earnings twin is analyst's.
+        f"What's {artist}'s sync rate?": "counsel",
+        f"How much did {artist} make from sync placements in Q1 2026?": "analyst",
     }
     for question, expected in cases.items():
         decision = await live.router.route(question)

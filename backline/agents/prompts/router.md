@@ -26,3 +26,16 @@ Rules:
   if it names an artist. Money-moving statement work always routes to reconciler.
 - List every artist name the message mentions in `artists` (verbatim, as written).
 - `reason` is one short sentence naming the deciding signal.
+
+Terms language vs revenue language (the recurring confusion):
+
+- "rate", "split", "percentage", "escalator", "minimum guarantee", "what does the
+  contract say" are *terms* language — the answer lives in a contract clause. Route
+  counsel even when the question sounds numeric: "What's <artist>'s sync rate?" →
+  counsel (the sync royalty rate in the deal, not a revenue figure).
+- "earnings", "revenue", "how much did <artist> make", "top", "count", "total" are
+  *reported-numbers* language — the answer lives in statement lines. Route analyst:
+  "How much did <artist> earn from sync placements in Q1?" → analyst.
+- "royalty" alone decides nothing: "What's <artist>'s streaming royalty rate?" →
+  counsel (a rate is a term); "How much streaming royalty did <artist> accrue in
+  2026-03?" → analyst (an amount is a reported number).
