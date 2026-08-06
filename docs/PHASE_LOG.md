@@ -381,6 +381,39 @@ tests/providers/test_live_anthropic.py::test_live_tool_use_round_trip PASSED    
   tool executes cleanly; staging writes + note are stamped with the traced run id;
   span tree asserted from both the in-memory sink and Postgres.
 
+**Real-model retrieval probe (manual, 2026-08-06)** — the deviation below noted the
+build sandbox could not load the real models; `make retrieval-probe` has now been run
+by the maintainer on the dev machine (bge-small-en-v1.5 + ms-marco cross-encoder via
+`uv sync --extra embed`):
+
+```text
+retrieval probe — 40 clause-lookup queries, embedder=(store default), reranker=cross-encoder/ms-marco-MiniLM-L-6-v2, as_of=2026-06-30
+mode                  MRR R@1  R@3  R@5  R@10
+scoped/fused        0.298 0.07 0.33 0.65 0.95
+scoped/rerank       0.398 0.15 0.57 0.78 0.97
+unscoped/fused      0.000 0.00 0.00 0.00 0.00
+unscoped/rerank     0.003 0.00 0.00 0.00 0.03
+rerank lift (scoped MRR): 0.298 → 0.398 (+0.100)
+```
+
+(`embedder=(store default)` is the probe's label for "no override": queries embed with
+the model the chunk store records, i.e. `BAAI/bge-small-en-v1.5`.)
+
+The real stack confirms the offline picture and sharpens it:
+
+- **The rerank lift replicates on production models**: scoped MRR 0.298 → 0.398
+  (+0.100), R@3 0.33 → 0.57, R@10 reaching 0.97 — same shape as the offline stack's
+  +0.136, now measured with the cross-encoder the runtime actually ships.
+- **The unscoped collapse is total — strong evidence for D-002**: with real semantic
+  embeddings and the governing-document filter off (artist named only in the query
+  text), the probe scores MRR 0.000 fused / 0.003 reranked. On a corpus of ~385
+  near-identical generated contracts, every §3 reads like every other §3 — semantic
+  similarity cannot single out *whose* clause governs, and the cross-encoder can only
+  reorder candidates retrieval already surfaced. Retrieval without the
+  governing-document filter doesn't degrade on this corpus; it fails entirely.
+  Entity/governance scoping belongs in structure (the SQL filter), exactly as D-002
+  argues.
+
 **Deviations / notes**
 
 - **Real-model retrieval numbers not produced in this session**: the build sandbox's
