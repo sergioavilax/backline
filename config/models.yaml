@@ -5,9 +5,12 @@
 # Prices are QUOTED STRINGS so they load as exact Decimals — money is never float
 # (invariant 1); the registry rejects bare floats at load time.
 #
-# Anthropic list prices as of 2026-08 (claude-sonnet-5 has intro pricing through
-# 2026-08-31; the standing sticker price is recorded here so cost numbers stay
-# comparable across the build).
+# A model carries either flat usd_per_mtok_in/out or a dated `pricing` schedule:
+# ordered tiers, each billing through its `through` date (inclusive, UTC), with
+# exactly one open-ended final tier. The registry resolves the tier for the date
+# it loads (tests pin `on=`), records the choice on the ModelInfo, and the eval
+# runner prints it — a price transition happens on schedule and out loud, never
+# by silently editing constants after the fact (D-017).
 models:
   claude-opus-5:
     provider: anthropic
@@ -17,8 +20,16 @@ models:
   claude-sonnet-5:
     provider: anthropic
     context_window: 1000000
-    usd_per_mtok_in: "3.00"
-    usd_per_mtok_out: "15.00"
+    # Anthropic bills claude-sonnet-5 at launch-intro rates through 2026-08-31
+    # (UTC), standing list price from 2026-09-01. Verified against the billing
+    # dashboard for eval run 2b9f39fb (2026-08): metering at the flat 3/15
+    # sticker overstated actual spend by exactly 1.5x ($16.74 vs ~$11.16).
+    pricing:
+      - through: "2026-08-31"
+        usd_per_mtok_in: "2.00"
+        usd_per_mtok_out: "10.00"
+      - usd_per_mtok_in: "3.00"
+        usd_per_mtok_out: "15.00"
   claude-haiku-4-5:
     provider: anthropic
     context_window: 200000
@@ -35,6 +46,7 @@ models:
 
   # Deterministic test models: MockProvider turns priced like their real-tier
   # counterparts so budget/cost tests exercise real arithmetic without a key.
+  # Deliberately flat (no dated tiers): test costs must not move on a calendar day.
   mock-sonnet:
     provider: mock
     context_window: 200000
