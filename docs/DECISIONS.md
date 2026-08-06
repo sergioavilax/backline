@@ -508,3 +508,131 @@ Judgment calls in `backline/agents/` that BUILD_PLAN Phase 4 left open:
   summarizer hook exists since Phase 2, but sessions (and therefore a place to
   construct them) arrive with the API — wiring the utility model in belongs there.
   The §4.5 scope-3 tail (entity auto-recall) shipped here as planned.
+
+---
+
+## D-015 — Eval suite as a golden artifact; output contracts; pinned agents (Phase 5)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** §5.2 wants ~130 questions "generated + hand-authored" from the answer
+key, content-hashed, with deterministic T1 scoring and mechanical T2 trace
+assertions. Several load-bearing details were unspecified: where expected answers
+come from, how a prose answer becomes a scorable value, which agent fields each
+question, and how corruption-affected artists interact with money questions.
+
+**Decisions.**
+
+- **The suite is a golden artifact, generated offline.** `evals/generate_suite.py`
+  builds the world in memory (`datagen.assemble.build_world`, no database) and
+  derives every expectation from the same objects the DB is seeded from
+  (`world.ledger` == `truth.expected_ledger`; ids are explicit, so in-memory line
+  ids == Postgres ids). The committed `evals/suites/core.json` must reproduce
+  byte-for-byte (`python -m evals generate --check` in CI + a test) — the world
+  fingerprint discipline applied to the question set. Selection variety comes from
+  a dedicated seeded stream (`SeedSequence([WORLD_SEED, 1005])` — disjoint from
+  datagen's streams by spawn key).
+- **Hand-authored cases carry prompts, never numbers.** Each of the 25 committed
+  hard cases (`suites/hand_authored.json`) names a *resolver* in the generator
+  that binds its `{placeholders}` and derives the expectation from the answer key
+  at generation time — a hand case can go stale in prose but never in arithmetic.
+  Every generated expectation is validated at generation (`GenerationError` on
+  rate-zero, ambiguous titles, unreachable quotas...), and Postgres-backed tests
+  re-verify the committed suite against the seeded DB (reference SQL reproduces
+  expected values; ledger fields match `truth.expected_ledger`; flag sets match
+  the registry; paid-over sets match truth).
+- **Questions state their output contract.** Prompts end with an explicit
+  final-line protocol (`ANSWER: $<amount>`, `ANSWER: YES/NO`, `FLAG: <kind>
+  <source>:<line_id>` lines...) appended uniformly by the generator. T1 extraction
+  is therefore mechanical (last `ANSWER:` line wins); ignoring the contract is a
+  named failure (`no_answer_line`), not a fuzzy match. Abstention questions wear
+  the suffix of the kind they masquerade as — they must look like normal
+  questions. The typed `ABSTAIN:` first-line protocol (D-014) is what scores;
+  prose reluctance does not.
+- **Eval questions pin their agent.** The runner drives the named agent directly —
+  no router in the eval path. The suite measures agent competence per category;
+  the router has its own unit/live tests, and §5.2 defines no routing category.
+  Reconciler workflow questions (reconciliation, multi_step) carry the agent the
+  workflow belongs to.
+- **Anomaly-tainted artists cannot anchor money questions.** An artist whose
+  statement lines carry registered non-borderline corruption (any kind except the
+  dashboard-side `dashboard_gap`, D-005) has a DB-computed ledger that legitimately
+  diverges from truth until the Reconciler excludes the corruption — money
+  questions target the other ~130 artists. Pay-over-threshold sets (multi_step) are
+  additionally *boundary-checked*: no tainted artist's payable may sit within its
+  worst-case corruption shift of the threshold (shift bound = Σ of the artist's
+  corrupted-line values × max FX × a ceiling rate, cumulative through the period),
+  so exclude-vs-keep handling can never flip set membership.
+- **A question's score is the minimum of its tier scores.** A correct number
+  produced by a forbidden process (mental math, denied SQL) fails, as does a
+  beautifully-cited wrong number. Category score = 100 × mean of question scores;
+  reconciliation questions score F1 (precision/recall vs the registry) with the
+  two borderline non-flags reported by name. T2 asserts over the span tree — a
+  `sql_policy` guardrail denial *is* the violation even though the tool blocked
+  it (the attempt shows intent; invariant 3's eval face).
+- **T3 is platform-only and blind to expectations.** The judge
+  (`evals/judges/rubric_v1.md`, content-hashed; model + rubric hash recorded per
+  result) grades faithfulness-to-citations, clarity, and hedging on 1-5. It sees
+  the question, the answer, and the verbatim text of cited clauses fetched by the
+  harness — never the expected answer (T1 owns accuracy) and never a baseline
+  answer (B0/B1 cannot cite structurally; grading their faithfulness to nothing
+  would be noise). Baseline tracks record T2 as `not_applicable` — never counted,
+  never a violation.
+
+**Alternatives rejected**: generating from the seeded Postgres (couples suite
+generation to a DB and hides answer-key drift); LLM-extracted answers (a second
+model grading the first — unfalsifiable); routing eval questions through the
+router (conflates two measurements; doubles cost); letting money questions hit
+tainted artists with "the agent should exclude corruption" (turns T1 into a
+reconciliation test with an under-specified expected value).
+
+---
+
+## D-016 — Regression gate: keyed baselines, bootstrap-pass, a mock baseline with teeth (Phase 5)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** §5.4: compare runs against a committed `evals/results/baseline.json`,
+fail CI when a category drops >3 pts or T2 violations appear — but no live run
+exists until the human executes the first budgeted eval, and a gate that only ever
+runs behind a secret is a gate nobody has seen fire.
+
+**Decisions.**
+
+- **Baseline entries are keyed `(model, track, subset)`** and pin the
+  `suite_hash` they were recorded against. A run whose suite hash differs fails
+  the gate outright ("stale baseline") — changing the question set requires a
+  conscious re-baseline in the same PR, exactly like the world fingerprint.
+  `--write-baseline` upserts an entry wholesale from a run summary.
+- **No matching entry → bootstrap pass, loudly.** A gate with no reference would
+  either block forever or invent numbers; it passes with an explicit BOOTSTRAP
+  banner telling the operator to record one. Budget-exhausted partial runs can
+  never clear the gate (a subset score is not a comparable score).
+- **The committed baseline ships with the three mock-smoke entries** (platform /
+  b0 / b1 × `mock-sonnet` × smoke subset, all 100s from deterministic
+  perfect-agent scripts). `make eval-smoke` runs the whole harness keylessly on
+  every PR — real agents-on-mock, real tools, real Postgres, real scorers — and
+  gates against those entries, so the gate mechanism itself executes with teeth
+  on every PR, not just when a key is present. A test sabotages one scripted
+  answer and asserts the committed gate trips (the DoD's gate-of-the-gate, at
+  system level). Live `claude-sonnet-5` entries land when the human runs the
+  first budgeted eval and commits `--write-baseline` output (the same deferred-
+  live-artifact protocol as Phases 2–4).
+- **CI shape**: the `test` job gains the suite-drift check and keyless
+  `make eval-smoke`; the `eval-regression` job becomes real — Postgres service,
+  `--extra embed` (CPU wheels, D-011), seed + real embeddings, `evals run
+  --gate-subset --model claude-sonnet-5 --budget 5.00 --yes --gate` — with the
+  step-level secret gate so forks stay green. It runs on the GitHub-hosted runner
+  until a self-hosted one is registered (BUILD_PLAN names self-hosted; a
+  `runs-on` job comment marks the one-line switch — a job pinned to a
+  non-existent runner would queue forever, which is worse than a slower hosted
+  run). `nightly-evals.yml` runs the full suite on main on the same pattern.
+- **The gate subset is how §5.4's $5 budget is honored**: 43 flagged questions
+  (every hand-authored hard case + a per-category quota of generated ones,
+  adversarial included) project comfortably under $5 on the Sonnet tier, while
+  the full 133-question, three-tier run projects past it — that one belongs to
+  the nightly workflow and the human's budgeted full runs.
+
+**Consequence.** Until the first live baseline lands, a live regression is caught
+only by the absolute rules (T2 violations, partial-run refusal) — accepted, and
+visible in the gate output as bootstrap language rather than silent green.

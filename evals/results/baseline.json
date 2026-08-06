@@ -1,0 +1,67 @@
+{
+ "baselines": [
+  {
+   "categories": {
+    "abstention": 100.0,
+    "adversarial": 100.0,
+    "catalog_lookup": 100.0,
+    "contract_terms": 100.0,
+    "cross_collateral": 100.0,
+    "multi_step": 100.0,
+    "reconciliation": 100.0,
+    "recoupment_state": 100.0,
+    "royalty_math": 100.0,
+    "sql_analytics": 100.0
+   },
+   "git_sha": "597fd0649755",
+   "model": "mock-sonnet",
+   "note": "keyless MockProvider smoke \u2014 plumbing baseline (perfect scripts)",
+   "recorded_at": "2026-08-06",
+   "subset": "smoke",
+   "suite_hash": "6eef41c6706f309a",
+   "track": "b0"
+  },
+  {
+   "categories": {
+    "abstention": 100.0,
+    "adversarial": 100.0,
+    "catalog_lookup": 100.0,
+    "contract_terms": 100.0,
+    "cross_collateral": 100.0,
+    "multi_step": 100.0,
+    "reconciliation": 100.0,
+    "recoupment_state": 100.0,
+    "royalty_math": 100.0,
+    "sql_analytics": 100.0
+   },
+   "git_sha": "597fd0649755",
+   "model": "mock-sonnet",
+   "note": "keyless MockProvider smoke \u2014 plumbing baseline (perfect scripts)",
+   "recorded_at": "2026-08-06",
+   "subset": "smoke",
+   "suite_hash": "6eef41c6706f309a",
+   "track": "b1"
+  },
+  {
+   "categories": {
+    "abstention": 100.0,
+    "adversarial": 100.0,
+    "catalog_lookup": 100.0,
+    "contract_terms": 100.0,
+    "cross_collateral": 100.0,
+    "multi_step": 100.0,
+    "reconciliation": 100.0,
+    "recoupment_state": 100.0,
+    "royalty_math": 100.0,
+    "sql_analytics": 100.0
+   },
+   "git_sha": "597fd0649755",
+   "model": "mock-sonnet",
+   "note": "keyless MockProvider smoke \u2014 plumbing baseline (perfect scripts)",
+   "recorded_at": "2026-08-06",
+   "subset": "smoke",
+   "suite_hash": "6eef41c6706f309a",
+   "track": "platform"
+  }
+ ]
+}

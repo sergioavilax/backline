@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     planner_model: str = "claude-sonnet-5"
     utility_model: str = "claude-haiku-4-5"
     router_model: str = "claude-haiku-4-5"
+    # T3 LLM-as-judge model (§5.1): Sonnet-class; judge model + rubric hash are
+    # recorded with every judged eval result.
+    judge_model: str = "claude-sonnet-5"
     # Below this route confidence the router asks a clarifying question instead of
     # guessing an agent (§2).
     router_confidence_threshold: float = 0.6
