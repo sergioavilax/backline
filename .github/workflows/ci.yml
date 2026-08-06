@@ -81,6 +81,76 @@ jobs:
       - run: pnpm lint
       - run: pnpm build
 
+  # Phase 6 DoD: Playwright smoke — boot the keyless demo stack (seeded world,
+  # API in demo mode, built UI) and drive chat → reconcile → approve a batch.
+  e2e-smoke:
+    name: playwright smoke (keyless demo stack)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: backline
+          POSTGRES_PASSWORD: backline
+          POSTGRES_DB: backline
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U backline -d backline"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://backline:backline@localhost:5432/backline
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - run: uv sync --frozen
+      - name: Seed world + chunk corpus (hash embedder — keyless)
+        run: |
+          uv run python -m backline.db.migrate
+          uv run python -m datagen seed
+          EMBED_MODEL=hash uv run python -m backline.rag.embed
+      - name: Start API (demo mode — no provider configured)
+        run: |
+          nohup uv run uvicorn backline.api.main:app --port 8000 > /tmp/api.log 2>&1 &
+          timeout 30 bash -c 'until curl -sf localhost:8000/readyz; do sleep 1; done'
+      - name: Build + start UI
+        working-directory: ui
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          nohup pnpm start > /tmp/ui.log 2>&1 &
+          timeout 30 bash -c 'until curl -sf localhost:3000/chat > /dev/null; do sleep 1; done'
+      - name: Install Playwright chromium
+        working-directory: ui
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run smoke
+        working-directory: ui
+        run: pnpm exec playwright test
+      - name: Server logs on failure
+        if: failure()
+        run: |
+          echo "── api ──"; tail -50 /tmp/api.log || true
+          echo "── ui ──"; tail -50 /tmp/ui.log || true
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: ui/test-results/
+          if-no-files-found: ignore
+
   # §5.4: the live eval regression gate. Runs the budget-capped gate subset on the
   # planner-tier model and fails the job when any category drops >3 pts against
   # evals/results/baseline.json or any T2 violation appears (`evals gate`).
