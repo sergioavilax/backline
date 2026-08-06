@@ -20,6 +20,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.platypus import Flowable, Paragraph, SimpleDocTemplate, Spacer
 
+from backline.royaltycalc import pct, pct_points
 from datagen.config import WorldConfig
 from datagen.world import Structure
 from datagen.worldmodel import Contract
@@ -47,12 +48,6 @@ _BODY = ParagraphStyle("ClauseBody", fontName="Helvetica", fontSize=9.5, leading
 
 def _fmt_date(d: date | None) -> str:
     return d.strftime("%B %d, %Y") if d else "the date of last-dated signature"
-
-
-def _pct(rate: str) -> str:
-    # :f keeps normalize()'s trailing-zero stripping but forbids scientific notation
-    # (plain Decimal('0.1') * 100 would otherwise render as '1E+1%').
-    return f"{(Decimal(rate) * 100).normalize():f}%"
 
 
 def _money(amount: str) -> str:
@@ -139,7 +134,7 @@ def contract_document(
             else f"in the territory of {entry['territory']}"
         )
         rate_paragraphs.append(
-            f"(a{len(rate_paragraphs)}) {_pct(entry['rate'])} of Net Receipts from "
+            f"(a{len(rate_paragraphs)}) {pct(entry['rate'])} of Net Receipts from "
             f"{REVENUE_TYPE_LABEL[entry['revenue_type']]} {scope};"
         )
     for esc in royalties.get("escalators", []):
@@ -147,8 +142,8 @@ def contract_document(
             f"Escalation: upon Artist's cumulative Net Receipts under this Agreement first "
             f"exceeding {_money(esc['threshold_usd'])} (measured at the opening of an "
             f"Accounting Period), each rate above shall increase by "
-            f"{_pct(esc['bump'])} percentage points for all subsequent Accounting Periods. "
-            f"Escalation tiers state total uplifts and do not compound."
+            f"{pct_points(esc['bump'])} percentage points for all subsequent Accounting "
+            f"Periods. Escalation tiers state total uplifts and do not compound."
         )
     clauses.append(("§3. ROYALTIES", rate_paragraphs))
 
@@ -280,14 +275,14 @@ def _amendment_document(
                 else f"in the territory of {entry['territory']}"
             )
             paragraphs.append(
-                f"{_pct(entry['rate'])} of Net Receipts from "
+                f"{pct(entry['rate'])} of Net Receipts from "
                 f"{REVENUE_TYPE_LABEL[entry['revenue_type']]} {scope};"
             )
         for esc in royalties.get("escalators", []):
             paragraphs.append(
                 f"Escalation: upon cumulative Net Receipts first exceeding "
                 f"{_money(esc['threshold_usd'])}, each rate increases by "
-                f"{_pct(esc['bump'])} percentage points thereafter."
+                f"{pct_points(esc['bump'])} percentage points thereafter."
             )
         clauses.append(("§A1. REPLACEMENT ROYALTY PROVISIONS", paragraphs))
     if "advances_recoupment" in sections:

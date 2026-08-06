@@ -12,7 +12,7 @@ mechanism behind the Beatriz Romano sync-rate false abstention (finding 1).
 
 from decimal import Decimal
 
-from backline.tools.calc import _pct
+from backline.royaltycalc import pct
 from backline.tools.retrieval import query_snippet
 
 RATE_CLAUSE = (
@@ -27,11 +27,13 @@ RATE_CLAUSE = (
 
 
 def test_calc_pct_never_uses_scientific_notation() -> None:
-    assert _pct(Decimal("0.1")) == "10%"
-    assert _pct(Decimal("0.2")) == "20%"
-    assert _pct(Decimal("0.3")) == "30%"
-    assert _pct(Decimal("0.54")) == "54%"
-    assert _pct(Decimal("0.225")) == "22.5%"
+    # calc_royalties renders rates via the one shared formatter (D-030) — the same
+    # `pct` the contract corpus uses, so tool output and quoted clauses can't diverge.
+    assert pct(Decimal("0.1")) == "10%"
+    assert pct(Decimal("0.2")) == "20%"
+    assert pct(Decimal("0.3")) == "30%"
+    assert pct(Decimal("0.54")) == "54%"
+    assert pct(Decimal("0.225")) == "22.5%"
 
 
 def test_snippet_short_content_passes_through() -> None:

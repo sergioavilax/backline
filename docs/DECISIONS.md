@@ -1239,3 +1239,80 @@ notation) and the calc `_pct` unit. **Operator action after pulling:
 `make seed && make embed`** — the on-disk corpus must re-render and the
 chunk store re-reconcile (content-hash keyed, so the 171 changed contracts'
 clauses re-chunk and re-embed; unchanged chunks keep their embeddings).
+
+---
+
+## D-030 — One rate formatter in `royaltycalc`; guards assert against the chunk *store*; escalation prose fixed (Phase 6 verification, follow-up)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** After D-029, an operator report showed `rag.contract_chunks`
+still carrying scientific notation ("contract 627 §3: `(a4) 1E+1% of Net
+Receipts…`") despite `make seed && make embed` on the D-029 fingerprint,
+and hypothesized a second clause-text renderer (canonical terms JSON →
+text) with its own unfixed formatting. Verified against a fresh
+pg16+pgvector: **there is no second renderer.** Chunk text has exactly one
+source — `pdfrender.contract_document` → `.txt` sidecar → `chunk_document`
+→ the embed job — and a genuinely fresh `make seed && make embed` at
+D-029's `33b4e62e…` yields a clean store (0 E-notation chunks; contract
+627 §3 reads "(a4) 10%…"; re-seed truncates `label.contracts` with
+`CASCADE`, wiping chunks, and embed rebuilds all 2,961). The dirty rows
+are *pre-fix rendered text kept alive by a stale corpus copy*: the embed
+job faithfully mirrors whatever corpus `DATA_DIR` names, so an embed run
+against a pre-D-029 corpus re-upserts dirty chunks over a clean store.
+The compose stack is the standing instance of that loop — `appdata:/data`
+holds the corpus rendered at first boot, init runs `datagen seed
+--if-empty` (skips re-rendering once seeded) then `rag.embed
+--best-effort` on **every** boot, so a pre-fix volume re-dirties
+`rag.contract_chunks` on each `make up` no matter how often the host
+seeds. Separately, the codebase-wide survey found exactly one genuinely
+unfixed `Decimal`→percent site: the eval generator's `_pct_str` (three
+committed `"2E+1"`/`"3E+1"` expected strings — frozen deliberately by
+D-028/D-029). The calc tool, demo transcript, and pdfrender each carried
+their own already-fixed copy of the same idiom — three private formatters
+whose agreement was maintained by hand.
+
+**Decision.**
+
+1. **One formatter.** `pct(rate)` ("10%", "22.5%") and `pct_points(rate)`
+   ("10", "2" — bare number for prose that supplies its own unit) live in
+   `backline/royaltycalc/rounding.py` beside the money quantizers — same
+   invariant-1 discipline: nothing else may format a rate. Float inputs are
+   rejected. Consumers: `datagen/pdfrender` (the corpus and therefore the
+   `.txt` sidecars, chunks, `/catalog/clauses`, `read_clause` — all verbatim
+   downstream), `backline/tools/calc` (spot quotes), `backline/api/demo`
+   (keyless transcript). The private `_pct`/`pct` copies are deleted.
+2. **Escalation prose.** The bump now renders through `pct_points`:
+   "each rate above shall increase by 2 percentage points" (base §3) /
+   "each rate increases by 3 percentage points thereafter" (amendment §A1)
+   — previously "increase by 2% percentage points", a unit stated twice.
+3. **Guards assert the artifact agents read.** D-029's scan covered
+   rendered *files* and stayed green while the *store* was dirty — checking
+   the wrong artifact. Now: a Postgres-gated test scans
+   `rag.contract_chunks` content + headings after a real seed + embed (E-
+   notation and the `% percentage points` typo, plus a non-vacuity floor);
+   a keyless twin scans `chunk_document` output over every rendered
+   contract (byte-identical to what embed upserts); a ratchet pins the
+   committed suites to exactly the three frozen E-notation strings (may
+   only shrink).
+4. **`_pct_str` stays byte-frozen** with the committed suite, per
+   D-028/D-029: `suite_hash` keys the live baseline in
+   `evals/results/baseline.json`, and regenerating without an
+   `ANTHROPIC_API_KEY` re-baseline in the same PR would fail the
+   secret-gated regression jobs. The freeze is now loud in-code (comment
+   names the successor: `royaltycalc.pct_points`) and mechanical (the
+   ratchet test); grading normalizes, so the frozen strings score
+   correctly.
+5. **Golden regenerated deliberately**: combined `33b4e62e…` →
+   `f7a0b877…`. **All 17 table hashes are unchanged** —
+   `truth.expected_ledger` and `label.contract_terms` included; the files
+   diff is exactly the 163 escalator-bearing contracts × (pdf + txt), 326
+   entries, inbox untouched. Wording-only, money truth bit-identical.
+
+**Consequence.** **Operator action after pulling: `make seed && make
+embed` (again).** On the compose stack that is *not* sufficient — the
+`/data` volume must re-render inside the init image, which `--if-empty`
+will skip:
+`docker compose run --rm init uv run --no-sync sh -c "python -m datagen seed && python -m backline.rag.embed --best-effort"`.
+The store-level guard turns the stale-corpus loop from silent into a red
+test on any DB it runs against.

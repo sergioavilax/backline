@@ -14,12 +14,13 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from backline.royaltycalc import parse_terms_doc, resolve_terms
+from backline.rag.chunker import chunk_document
+from backline.royaltycalc import parse_terms_doc, pct, resolve_terms
 from datagen.assemble import BuiltWorld
 from datagen.config import WorldConfig
 from datagen.dbload import fx_rows
 from datagen.fingerprint import combined_hash, fingerprint_from_world
-from datagen.pdfrender import _pct, contract_document, document_text
+from datagen.pdfrender import contract_document, document_text
 
 GOLDEN_PATH = Path(__file__).resolve().parents[1] / "golden" / "world_fingerprint.json"
 
@@ -171,12 +172,11 @@ class TestSpecialCases:
 class TestRateRendering:
     def test_pct_never_uses_scientific_notation(self) -> None:
         # Decimal.normalize() alone renders 10% as '1E+1' — rates must stay plain.
-        assert _pct("0.1") == "10%"
-        assert _pct("0.2") == "20%"
-        assert _pct("0.3") == "30%"
-        assert _pct("0.54") == "54%"
-        assert _pct("0.225") == "22.5%"
-        assert _pct("0.03") == "3%"
+        # The renderer imports the one shared formatter (D-030); its unit coverage
+        # lives in tests/royaltycalc/test_rounding.py.
+        assert pct("0.1") == "10%"
+        assert pct("0.54") == "54%"
+        assert pct("0.225") == "22.5%"
 
     def test_no_rendered_contract_contains_scientific_notation(self, built: BuiltWorld) -> None:
         pattern = re.compile(r"\dE[+-]\d")
@@ -187,6 +187,35 @@ class TestRateRendering:
             assert not pattern.search(text), (
                 f"contract {contract.id} renders a rate in scientific notation"
             )
+
+    def test_no_clause_chunk_contains_scientific_notation(self, built: BuiltWorld) -> None:
+        # D-030: guard the chunker's output too — its chunks are byte-for-byte what
+        # `make embed` upserts into rag.contract_chunks, so this covers the store's
+        # content without a database (the DB-side twin lives in tests/rag).
+        pattern = re.compile(r"\dE[+-]\d")
+        for contract in built.world.contracts:
+            text = document_text(
+                contract_document(contract, built.structure, built.structure.config)
+            )
+            for chunk in chunk_document(text):
+                assert not pattern.search(chunk.content) and not pattern.search(chunk.heading), (
+                    f"contract {contract.id} {chunk.clause_no} chunk carries scientific notation"
+                )
+
+    def test_escalation_prose_states_points_not_percent(self, built: BuiltWorld) -> None:
+        # "increase by 2% percentage points" was the D-030 wording bug: the bump must
+        # render as a bare number ("2 percentage points") in base §3 and amendment §A1.
+        escalated = 0
+        for contract in built.world.contracts:
+            text = document_text(
+                contract_document(contract, built.structure, built.structure.config)
+            )
+            assert "% percentage points" not in text, (
+                f"contract {contract.id} renders a percent sign before 'percentage points'"
+            )
+            if "percentage points" in text:
+                escalated += 1
+        assert escalated >= 20  # escalators are common enough that the guard has teeth
 
 
 class TestGolden:

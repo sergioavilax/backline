@@ -16,7 +16,7 @@ from backline.royaltycalc.engine import (
 from backline.royaltycalc.fx import to_usd
 from backline.royaltycalc.rates import base_rate, effective_rate, escalator_bump
 from backline.royaltycalc.recoupment import RecoupResult, apply_minimum_guarantee, recoup
-from backline.royaltycalc.rounding import CENT, SIX, ZERO, money6, to_cents
+from backline.royaltycalc.rounding import CENT, SIX, ZERO, money6, pct, pct_points, to_cents
 from backline.royaltycalc.terms import (
     KINDS,
     REVENUE_TYPES,
@@ -63,6 +63,8 @@ __all__ = [
     "escalator_bump",
     "money6",
     "parse_terms_doc",
+    "pct",
+    "pct_points",
     "recoup",
     "resolve_terms",
     "to_cents",

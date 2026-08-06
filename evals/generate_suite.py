@@ -110,6 +110,13 @@ class GenerationError(RuntimeError):
 
 
 def _pct_str(rate: Decimal) -> str:
+    # DELIBERATELY byte-frozen with the committed suite (D-029/D-030): this is the one
+    # remaining normalize()-only percent rendering, and it emits '2E+1'-style expected
+    # strings for whole-ten rates (3 questions in core.json — grading normalizes, so
+    # they score correctly). Switching to backline.royaltycalc.pct_points changes
+    # suite_hash, which strands the live baseline in evals/results/baseline.json until
+    # an ANTHROPIC_API_KEY re-run re-records it — fold this into the next deliberate
+    # suite regeneration + re-baseline, in that same PR.
     return str((rate * 100).normalize())
 
 

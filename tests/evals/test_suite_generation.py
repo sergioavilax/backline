@@ -7,6 +7,7 @@ the agents will actually be evaluated on.
 """
 
 import json
+import re
 from decimal import Decimal
 
 import asyncpg
@@ -38,6 +39,28 @@ def test_committed_suite_reproduces_exactly(suite: Suite, regenerated: Suite) ->
 
     assert regenerated.suite_hash == suite.suite_hash
     assert (SUITES_DIR / "core.json").read_text(encoding="utf-8") == dump_suite(regenerated)
+
+
+def test_no_new_scientific_notation_in_committed_suites(suite: Suite) -> None:
+    """Ratchet (D-030): exactly three committed expected strings remain in scientific
+    notation — byte-frozen with the suite because ``suite_hash`` keys the live baseline
+    (D-028/D-029; grading normalizes, so '2E+1' scores as 20). No new E-notation may
+    enter anywhere in a question; this set may only shrink, and only in a deliberate
+    suite-regeneration + re-baseline PR (which also flips ``_pct_str`` to
+    ``royaltycalc.pct_points``)."""
+    frozen = {
+        ("contract_terms-004", "2E+1"),
+        ("hand-contract_terms-01", "3E+1"),
+        ("hand-contract_terms-03", "3E+1"),
+    }
+    pattern = re.compile(r"\dE[+-]\d")
+    offenders = {
+        (q.id, str(q.expected))
+        for q in suite.questions
+        if pattern.search(json.dumps({"p": q.prompt, "e": q.expected, "m": q.meta}, default=str))
+    }
+    assert offenders == frozen
+    assert not pattern.search(HAND_FILE.read_text(encoding="utf-8"))
 
 
 def test_category_counts_match_plan(suite: Suite) -> None:
