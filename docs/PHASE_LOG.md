@@ -1303,3 +1303,106 @@ one-liner) — host-side seeding never touches it and `--if-empty` skips it.
 Suite state: full pytest green against Postgres (532 passed), ruff +
 `mypy --strict` clean, `evals generate --check` reproduces the committed
 suite, `eval-smoke` green. One PR, no Phase 7 work.
+
+---
+
+## Phase 7 — Model Benchmark Sweep · 2026-08-06
+
+Session prompt: execute Phase 7 exactly (BUILD_PLAN §7) under the operator's
+sweep policy: **API rows first — claude-opus-5 (hard budget $35),
+claude-sonnet-5, claude-haiku-4-5 — with the local OpenAI-compat row (Qwen)
+structured as a follow-up the operator executes separately per
+`benchmarks/LOCAL.md`; the report must degrade gracefully to API-only.** No
+Phase 8 work.
+
+**Shipped**
+
+- **`benchmarks/run_sweep.py`** — the unattended sweep CLI: runs the committed
+  matrix (`benchmarks/sweep.yaml`) sequentially over the full core suite, one
+  eval run per model row, per-row hard budget caps, world/provider pre-flight
+  before any spend, per-row summary tables, and an exit code that
+  distinguishes complete from partial. Resumable at both levels (D-031): each
+  row's eval run id is pre-minted into `data/benchmarks/sweep_state.json`
+  before its first question — re-running the same command resumes mid-row
+  (the runner skips scored questions), skips completed rows, self-heals stale
+  state, and `--fresh` re-measures deliberately. `--model` runs a single row
+  (matrix, follow-up, or off-matrix with `--budget`); `--subset smoke|gate`
+  is a live dry pass that never writes committed artifacts; `--budget 0` maps
+  to uncapped for the zero-priced local row (a literal $0 would trip the
+  runner's `spent + reserved >= budget` stop on question one).
+- **`benchmarks/sweep.py`** — the core library: matrix loading (quoted-string
+  Decimal budgets, float-rejecting, registry-validated), sweep state,
+  trace-derived metrics (`app.runs`/`app.spans` → mean iterations, tool-error
+  rate with per-status split, tokens, runs-by-status, agent-only cost — judge
+  runs are separate `agent='judge'` rows, which is what makes the split
+  exact), and the per-model results document
+  `benchmarks/results/{model}.json`: accuracy by category, $/query from the
+  CostMeter (agent loop only; judge overhead carried separately), p50/p95
+  latency, mean iterations, tool-error rate, exhaustion counts, token totals,
+  price basis, runtime-config provenance.
+- **`benchmarks/report.py`** — renders `benchmarks/results/REPORT.md`
+  (headline table, category × model matrix, per-row provenance with the
+  agent/judge spend split) plus `comparison.svg` (accuracy vs $/query
+  frontier; theme-adaptive via `prefers-color-scheme`; complete rows only,
+  exclusions named in the subtitle). Degrades gracefully per §7: absent rows
+  render as pending lines — the local row by name, pointing at LOCAL.md —
+  and the pending-state REPORT.md is committed as proof. Partial rows carry
+  a dagger and the exact resume command. Chart hue validated with the dataviz
+  palette checks on both surfaces.
+- **`benchmarks/sweep.yaml`** — the operator policy as a committed artifact:
+  rows `[opus $35 (hard), sonnet $20, haiku $9]`, follow-up `[local-qwen,
+  uncapped]`, judge pinned `claude-sonnet-5`, track platform. The sonnet cap
+  is sized for the *standard* price tier so the matrix survives the scheduled
+  2026-09-01 transition (D-017); a test pins projection ≤ cap on both sides
+  of it. Projections at intro pricing: opus $27.66 · sonnet $11.27 · haiku
+  $5.80 · local $0.34 (all judge).
+- **`benchmarks/LOCAL.md`** — the turnkey local procedure verbatim from §7
+  (vLLM flags for the Qwen3 family, the `hermes`-parser warning, `--budget 0
+  --yes`), extended with the judge-key requirement (D-031), resume behavior,
+  and the copy-back + `make bench-report` landing steps.
+- **`docs/BENCHMARK_NOTES.md`** — the §7 analysis document, written the only
+  way it honestly can be before the numbers exist: metric semantics,
+  what-the-sweep-holds-fixed, the Phase 5 sonnet priors as the anchor row,
+  and five **pre-registered hypotheses** (opus cap-artifact risk with the
+  token math, haiku iteration inflation, the concave frontier, cheap-row
+  abstention/adversarial risk, tool-error-rate-predicts-score) with ⏳
+  fill-in sections keyed to REPORT.md fields.
+- **Tests** (26 new; suite green): keyless — committed matrix encodes the
+  operator policy verbatim (opus $35 asserted), projection-fits-budget pinned
+  across the price transition, float budgets rejected, uncapped mapping,
+  results-doc derivation (splits, quantization, weighted overall), CLI row
+  resolution and flag validation, report degradation (API-only, all-pending,
+  partial daggers, local join, off-matrix rows), SVG determinism +
+  complete-rows-only + dark-mode block. Postgres — full row end-to-end on
+  scripted MockProviders over the smoke slice re-wrapped as a full suite (no
+  test-only flags in prod code): results doc with real trace metrics and an
+  exactly-reconciling agent+judge=total split, report+chart emission,
+  budget-stop → partial doc → resume completing **the same eval run**, stale
+  sweep state self-healing, world pre-flight.
+- Plumbing: `make bench-sweep` / `make bench-report`; mypy `--strict` scope
+  now includes `benchmarks/`; TRACEABILITY row updated.
+
+**Deviation from the §7 letter, and why**: `--model local-qwen --budget 0`
+runs uncapped rather than literally-zero-capped — the plan's own invocation
+would otherwise skip every question against the runner's committed-spend gate;
+recorded in D-031 and sweep.yaml comments.
+
+**Explicitly remaining (operator actions — this session ran keyless in a
+remote container, same constraint as the Phase 5 close-out; the sweep spends
+real money and the plan's budget authority sits with the operator):**
+
+1. `make bench-sweep` on the operator host (seeded world + `ANTHROPIC_API_KEY`)
+   — ≈ $45 projected, $64 hard-capped. Optional cheap rehearsal first:
+   `python benchmarks/run_sweep.py --subset smoke --yes` (~$2). Partial rows
+   print their exact resume command.
+2. Commit the emitted `benchmarks/results/*.json` + regenerated `REPORT.md` +
+   `comparison.svg` (the DoD's "results JSONs committed" lands with that PR).
+3. Fill the ⏳ sections of `docs/BENCHMARK_NOTES.md` against REPORT.md — the
+   hypotheses are pre-registered, the sections are keyed to report fields.
+4. Later, at leisure: the LOCAL.md follow-up for the local row (one Ubuntu
+   boot), then `make bench-report` and the notes' §8.
+
+Suite state: full pytest green against Postgres (558 passed locally, pg16 +
+pgvector, seeded world), ruff + `mypy --strict` clean, `evals generate
+--check` untouched (suite and baselines byte-identical — the sweep reads the
+committed suite, never regenerates it). One PR.
