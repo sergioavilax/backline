@@ -5,7 +5,11 @@ tool calls (validated by guardrails, deduped by working memory, oversize results
 compressed by the utility model) or finalize into a typed ``FinalAnswer``.
 
 Hard limits come from ``RunLimits``: a run that trips the iteration or budget cap ends
-``status=exhausted`` — never a silent truncation. Every step is traced (run → iteration
+``status=exhausted`` — never a silent truncation. A reply the provider cut at
+``max_tokens`` is likewise never acted on: its tool calls are discarded un-executed
+(streamed partial-JSON arguments are a prefix of what the model meant) and its text is
+never finalized as an answer — the model gets an explicit notice and the loop
+continues (D-021). Every step is traced (run → iteration
 → llm_call/tool_call/guardrail/compression) and every LLM call is metered; providers
 are only ever invoked from inside a traced span here (invariant 6).
 """
@@ -131,6 +135,20 @@ _COMPRESS_SYSTEM = (
     "boilerplate. Be faithful — never invent content."
 )
 
+_TRUNCATED_CALL_NOTICE = (
+    "not executed: this tool call was cut off by the output-token limit "
+    "(max_tokens={max_tokens}) while its arguments were still streaming, so the "
+    "runtime discarded it rather than run it on incomplete arguments. Re-issue the "
+    "call — lead with the tool call and keep any preamble text short."
+)
+
+_TRUNCATED_FINAL_NOTICE = (
+    "[runtime notice] Your reply was cut off by the output-token limit "
+    "(max_tokens={max_tokens}) before it finished, so it was not accepted as a "
+    "final answer. Continue from where you stopped and finish concisely, ending "
+    "with your required wrap-up lines."
+)
+
 
 class AgentRuntime:
     def __init__(
@@ -198,6 +216,9 @@ class AgentRuntime:
                         result = await self._llm_call(
                             it_span, provider, agent, messages, specs, costmeter
                         )
+                        if result.stop_reason == "max_tokens":
+                            await self._handle_truncated(it_span, agent, messages, result)
+                            continue
                         if result.tool_calls:
                             messages.append(
                                 Message(
@@ -277,6 +298,58 @@ class AgentRuntime:
                 }
             )
             return result
+
+    async def _handle_truncated(
+        self,
+        parent: SpanHandle,
+        agent: AgentSpec,
+        messages: list[Message],
+        result: CompletionResult,
+    ) -> None:
+        """A max_tokens-cut reply is never acted on (D-021).
+
+        Streaming assembles tool arguments from partial JSON, so a cut mid-call
+        yields a dict that is a *prefix* of what the model meant — sometimes one
+        that still validates. Executing it would act on a call the model never
+        finished (worst case: a silently partial submit_batch). Truncated text
+        likewise never finalizes as an answer. Both paths feed an explicit notice
+        back and let the loop continue; the incident is a guardrail span.
+        """
+        names = ", ".join(dict.fromkeys(call.name for call in result.tool_calls))
+        await self._record_incident(
+            parent,
+            Incident(
+                kind="output_truncated",
+                detail=f"reply hit max_tokens={agent.max_tokens}; "
+                + (
+                    f"discarded unfinished tool call(s): {names}"
+                    if names
+                    else "partial text not accepted as a final answer"
+                ),
+            ),
+        )
+        if result.tool_calls:
+            messages.append(
+                Message(role="assistant", content=result.text, tool_calls=result.tool_calls)
+            )
+            messages.extend(
+                Message(
+                    role="tool",
+                    tool_call_id=call.id,
+                    content=_TRUNCATED_CALL_NOTICE.format(max_tokens=agent.max_tokens),
+                    is_error=True,
+                )
+                for call in result.tool_calls
+            )
+            return
+        if result.text:
+            messages.append(Message(role="assistant", content=result.text))
+        messages.append(
+            Message(
+                role="user",
+                content=_TRUNCATED_FINAL_NOTICE.format(max_tokens=agent.max_tokens),
+            )
+        )
 
     async def _run_tool(
         self,

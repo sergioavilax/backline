@@ -367,6 +367,101 @@ async def test_oversize_result_truncates_without_utility_model() -> None:
     assert len(tool_result.content) < 1000
 
 
+async def test_truncated_tool_call_is_never_executed() -> None:
+    """A max_tokens-cut reply's tool calls are discarded, not run (D-021).
+
+    Streaming assembles tool arguments from partial JSON, so a cut mid-call can
+    yield arguments that *validate* while being a prefix of what the model meant
+    — executing them is acting on a call the model never finished. The arguments
+    here are deliberately complete/valid: the discard must key off stop_reason,
+    not off validation failing.
+    """
+    executed: list[str] = []
+
+    class RecordingParams(BaseModel):
+        stage_name: str
+
+    async def recording(params: RecordingParams) -> str:
+        executed.append(params.stage_name)
+        return f"artist {params.stage_name} has id 42"
+
+    tool: Tool[RecordingParams] = Tool(
+        name="lookup_artist", description="find", params=RecordingParams, handler=recording
+    )
+    provider = MockProvider(
+        [
+            MockTurn(
+                text="Submitting now.",
+                tool_calls=[_call("t1", stage_name="Nova Reyes")],
+                stop_reason="max_tokens",
+            ),
+            # The model sees the not-executed error result and re-issues the call.
+            MockTurn(
+                tool_calls=[_call("t2", stage_name="Nova Reyes")],
+                match="not executed",
+            ),
+            MockTurn(text="Done.", match="artist Nova Reyes has id 42"),
+        ]
+    )
+    runtime, sink = _runtime(provider)
+    result = await runtime.run(_agent(tools=[tool]), "Look up Nova Reyes.")
+
+    assert result.status == "completed"
+    assert executed == ["Nova Reyes"]  # the truncated call never reached the handler
+    # The wire history stays coherent: assistant turn with the cut call, then an
+    # error tool_result for it.
+    second = provider.calls[1]
+    assert [m.role for m in second.messages] == ["user", "assistant", "tool"]
+    error_result = second.messages[-1]
+    assert error_result.tool_call_id == "t1"
+    assert error_result.is_error is True
+    assert "output-token limit" in error_result.content
+    guardrail = next(s for s in sink.spans if s.kind == "guardrail")
+    assert guardrail.attrs["kind"] == "output_truncated"
+    assert "lookup_artist" in guardrail.attrs["detail"]
+    # No tool_call span exists for the discarded call — only the real execution.
+    tool_spans = [s for s in sink.spans if s.kind == "tool_call"]
+    assert len(tool_spans) == 1
+
+
+async def test_truncated_text_is_not_finalized_as_answer() -> None:
+    """A max_tokens-cut text reply never becomes the final answer (D-021):
+    run ddb797dc's multi_step-003 'completed' on a cut-off reply with no answer
+    line. The runtime nudges the model to continue instead."""
+    provider = MockProvider(
+        [
+            MockTurn(text="The reconciliation shows that", stop_reason="max_tokens"),
+            MockTurn(text="ANSWER: done", match="not accepted as a final answer"),
+        ]
+    )
+    runtime, sink = _runtime(provider)
+    result = await runtime.run(_agent(), "Reconcile the period.")
+
+    assert result.status == "completed"
+    assert result.final is not None
+    assert result.final.answer == "ANSWER: done"
+    # The partial text stays in history (assistant), followed by the user nudge.
+    second = provider.calls[1]
+    assert [m.role for m in second.messages] == ["user", "assistant", "user"]
+    assert second.messages[1].content == "The reconciliation shows that"
+    guardrail = next(s for s in sink.spans if s.kind == "guardrail")
+    assert guardrail.attrs["kind"] == "output_truncated"
+
+
+async def test_truncation_on_last_iteration_exhausts_honestly() -> None:
+    provider = MockProvider(
+        [MockTurn(text="partial", stop_reason="max_tokens")],
+    )
+    runtime, sink = _runtime(provider)
+    agent = _agent(limits=RunLimits(max_iterations=1, run_budget_usd=Decimal("1")))
+    result = await runtime.run(agent, "Answer something long.")
+
+    assert result.status == "exhausted"
+    assert result.final is None
+    kinds = [s.attrs["kind"] for s in sink.spans if s.kind == "guardrail"]
+    assert kinds == ["output_truncated", "iteration_cap"]
+
+
 async def test_provider_failure_ends_run_as_error() -> None:
     provider = MockProvider([MockTurn(tool_calls=[_call("c1", stage_name="A")])])
     runtime, sink = _runtime(provider)  # second call exhausts the script → ProviderError
