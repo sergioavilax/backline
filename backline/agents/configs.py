@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from decimal import Decimal
 from typing import Any
 
 from backline.agents.injection import injection_result_check
@@ -151,11 +152,16 @@ def _limits_for(name: str) -> RunLimits:
     if name != "reconciler":
         return base
     # The Reconciler is a workflow, not a Q&A turn: ingest+match per drop, scan,
-    # allocations, submit. Double the iteration/budget headroom, allow the slow
+    # allocations, submit. Double the iteration headroom, allow the slow
     # batch-allocation call, and keep multi-row tool reports un-compressed.
+    # The budget is sized against the workflow's measured cost, not derived from
+    # the Q&A knob (D-020): the old $1.00 (2x base, guessed pre-live) exhausted
+    # all six multi_step eval runs even at corrected prices (runs 2b9f39fb,
+    # 127c5ad8) — scan + allocations done, submit never reached — so the cap is
+    # $2.50; `max` lets the env knob raise it, never shrink it.
     return RunLimits(
         max_iterations=base.max_iterations * 2,
-        run_budget_usd=base.run_budget_usd * 2,
+        run_budget_usd=max(base.run_budget_usd, Decimal("2.50")),
         tool_timeout_s=max(base.tool_timeout_s, 120.0),
         max_result_tokens=max(base.max_result_tokens, 4000),
     )
