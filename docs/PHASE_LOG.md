@@ -215,12 +215,41 @@ Append-only. One entry per phase: what shipped, what was deferred, any deviation
   the `parent_id` self-FK) — fixed by insert-on-start/complete-on-end, recorded as
   D-008.
 
+**Live verification (manual, 2026-08-05)** — the DoD's one-time human `pytest -m live`
+run against the real Anthropic API, executed by the maintainer on the dev machine. Both
+live tests passed (plain text completion + forced tool-use round trip on
+`claude-haiku-4-5`):
+
+```text
+=================================================== test session starts ====================================================
+platform linux -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /home/somx/code/backline/.venv/bin/python
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: /home/somx/code/backline
+configfile: pyproject.toml
+testpaths: tests
+plugins: hypothesis-6.165.2, anyio-4.14.2, asyncio-1.4.0, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 205 items / 203 deselected / 2 selected
+
+tests/providers/test_live_anthropic.py::test_live_text_completion PASSED                                             [ 50%]
+tests/providers/test_live_anthropic.py::test_live_tool_use_round_trip PASSED                                         [100%]
+
+===================================================== warnings summary =====================================================
+.venv/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /home/somx/code/backline/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================================= 2 passed, 203 deselected, 1 warning in 4.19s =======================================
+```
+
 **Deviations / notes**
 
-- **Live Anthropic verification not executed in this session** — no API key in the
+- **Live Anthropic verification not executed in the build session** — no API key in the
   build environment, by design (the DoD assigns it to the human as a one-time manual
-  `pytest -m live` run; results belong in this log when run). The provider's wire
-  behavior is pinned offline against canned SSE instead.
+  `pytest -m live` run; results belong in this log when run — now recorded above,
+  2026-08-05). The provider's wire behavior is pinned offline against canned SSE instead.
 - The live smoke targets `claude-haiku-4-5` rather than an Opus-class model: it
   verifies plumbing, not capability, and §10's budget discipline names Haiku-class the
   cheap tier for dev pokes.
