@@ -67,8 +67,18 @@ def extract_citations(text: str) -> list[Citation]:
 
 
 def _abstained(text: str) -> bool:
-    first_line = text.strip().splitlines()[0] if text.strip() else ""
-    return _ABSTAIN.match(first_line) is not None
+    """Typed abstention: an ``ABSTAIN: <reason>`` line opening *or closing* the reply.
+
+    The prompts ask for the first line, but eval/output contracts simultaneously
+    demand the reply *end* with an ``ANSWER:``-shaped line, and a model resolving
+    that tension routinely closes with the abstention instead of opening with it.
+    Both positions are the typed protocol; an ``ABSTAIN:`` buried mid-reasoning
+    still is not (D-018).
+    """
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    return any(_ABSTAIN.match(line) is not None for line in {lines[0], lines[-1]})
 
 
 def finalize_cited(text: str) -> FinalAnswer:

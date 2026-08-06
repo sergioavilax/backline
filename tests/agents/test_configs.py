@@ -111,9 +111,30 @@ def test_finalize_cited_abstention() -> None:
     plain = finalize_cited("The rate is 30% (FBR-C-00501 §3).")
     assert plain.abstained is False
     assert [c.ref for c in plain.citations] == ["FBR-C-00501 §3"]
-    # ABSTAIN on a later line is not an abstention marker — first line only.
-    mid = finalize_cited("Here is the answer.\nABSTAIN: not really; this is line two.")
-    assert mid.abstained is False
+
+
+def test_finalize_cited_abstention_positions() -> None:
+    """D-018: the typed abstention may open or close the reply — output contracts
+    that demand a final ANSWER-shaped line pull models toward closing with it —
+    but an ABSTAIN buried mid-reasoning is still not the protocol."""
+    closing = finalize_cited(
+        "I searched the roster and the catalog; no artist matches.\n\n"
+        "ABSTAIN: no artist named 'Vera Nyx' on the roster."
+    )
+    assert closing.abstained is True
+
+    trailing_blank = finalize_cited("ABSTAIN: unknown clause.\n\n")
+    assert trailing_blank.abstained is True
+
+    buried = finalize_cited(
+        "If I could not verify this I would reply ABSTAIN: unknown.\n"
+        "The rate is 30% (FBR-C-00501 §3).\n"
+        "ANSWER: 30%"
+    )
+    assert buried.abstained is False
+
+    empty = finalize_cited("")
+    assert empty.abstained is False
 
 
 def test_finalize_reconciler_parses_wrap_up() -> None:
