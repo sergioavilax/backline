@@ -28,6 +28,10 @@ class GoverningDoc:
     contract_id: int
     kind: str  # base | amendment
     excluded_clauses: tuple[str, ...]  # base clauses replaced by an effective amendment
+    effective_from: date
+    effective_to: date | None
+    supersedes_contract_id: int | None  # amendments: the base they amend
+    replaces: tuple[str, ...]  # amendments: base clauses their sections replace
 
 
 async def governing_docs(
@@ -39,7 +43,8 @@ async def governing_docs(
     """All documents governing ``artist_id`` (or every artist) as of ``as_of``."""
     rows = await source.fetch(
         """
-        SELECT c.id, c.kind, a.supersedes_contract_id, a.replaced_sections
+        SELECT c.id, c.kind, c.effective_from, c.effective_to,
+               a.supersedes_contract_id, a.replaced_sections
         FROM label.contracts c
         LEFT JOIN label.amendments a ON a.amendment_id = c.id
         WHERE c.effective_from <= $1
@@ -50,19 +55,27 @@ async def governing_docs(
         artist_id,
     )
     excluded: dict[int, set[str]] = {}
+    replaces: dict[int, tuple[str, ...]] = {}
     for row in rows:
         if row["kind"] == "amendment" and row["supersedes_contract_id"] is not None:
-            target = excluded.setdefault(row["supersedes_contract_id"], set())
-            target.update(
-                SECTION_CLAUSE[section]
-                for section in row["replaced_sections"]
-                if section in SECTION_CLAUSE
+            clauses = tuple(
+                sorted(
+                    SECTION_CLAUSE[section]
+                    for section in row["replaced_sections"]
+                    if section in SECTION_CLAUSE
+                )
             )
+            replaces[row["id"]] = clauses
+            excluded.setdefault(row["supersedes_contract_id"], set()).update(clauses)
     return [
         GoverningDoc(
             contract_id=row["id"],
             kind=row["kind"],
             excluded_clauses=tuple(sorted(excluded.get(row["id"], ()))),
+            effective_from=row["effective_from"],
+            effective_to=row["effective_to"],
+            supersedes_contract_id=row["supersedes_contract_id"],
+            replaces=replaces.get(row["id"], ()),
         )
         for row in rows
     ]

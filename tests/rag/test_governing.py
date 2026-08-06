@@ -92,6 +92,24 @@ async def test_multi_era_artist_keeps_all_effective_bases(pool: asyncpg.Pool) ->
     assert len(bases) == row["n"]
 
 
+async def test_docs_carry_effective_windows_and_supersession_links(
+    pool: asyncpg.Pool, amended_case: asyncpg.Record
+) -> None:
+    # The search tool renders a governing-document inventory from these fields
+    # (Phase 6 verification, finding 1) — every doc must know its window, and an
+    # amendment must know which base and clauses it replaces.
+    docs = await governing_docs(pool, artist_id=amended_case["artist_id"], as_of=WINDOW_END)
+    by_id = {d.contract_id: d for d in docs}
+    for doc in docs:
+        assert doc.effective_from is not None
+    amendment = by_id[amended_case["amendment_id"]]
+    assert amendment.supersedes_contract_id == amended_case["base_id"]
+    assert amendment.replaces == ("§3",)
+    base = by_id[amended_case["base_id"]]
+    assert base.supersedes_contract_id is None
+    assert base.replaces == ()
+
+
 async def test_global_governing_set_spans_all_artists(pool: asyncpg.Pool) -> None:
     docs = await governing_docs(pool, artist_id=None, as_of=WINDOW_END)
     n_contracts_effective = await pool.fetchval(
