@@ -89,6 +89,9 @@ services:
   ui:
     build:
       context: ui
+      args:
+        # Where the reviewer's BROWSER reaches the API (baked into the bundle).
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     ports:
       - "${UI_PORT:-3000}:3000"
     healthcheck:
