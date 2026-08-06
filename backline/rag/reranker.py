@@ -7,12 +7,15 @@
   and the comparison arm the retrieval probe reports when the real model is absent).
 
 ``RERANK=off`` disables the stage entirely; ``search`` treats a ``None`` reranker as
-off, so the flag decides at construction time, not per call.
+off, so the flag decides at construction time, not per call. ``get_reranker`` is the
+process-wide cache (cross-encoder weights load once per process); ``build_reranker``
+constructs uncached.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from functools import lru_cache
 from itertools import pairwise
 from typing import Protocol
 
@@ -86,3 +89,11 @@ def build_reranker(spec: str) -> Reranker:
     if spec == "lexical" or spec == LEXICAL_RERANKER_ID:
         return LexicalReranker()
     return CrossEncoderReranker(spec)
+
+
+@lru_cache(maxsize=4)
+def get_reranker(spec: str) -> Reranker:
+    """Process-wide reranker cache — the default way to obtain a reranker (same
+    contract as ``embedder.get_embedder``: one instance per spec per process,
+    failures never cached)."""
+    return build_reranker(spec)

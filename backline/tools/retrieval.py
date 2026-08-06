@@ -8,7 +8,9 @@ not a dead end).
 
 Embedder/reranker resolution: explicit overrides on the ``ToolContext`` win (tests,
 Phase 4 bootstrap); otherwise the store's recorded embedding model decides the query
-embedder, and ``RERANK=on`` + ``RERANK_MODEL`` build the reranker once, lazily.
+embedder and ``RERANK=on`` + ``RERANK_MODEL`` pick the reranker — both through the
+process-wide model caches (``get_embedder``/``get_reranker``), so weights load once
+per process, never per query.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from datetime import date
 from pydantic import BaseModel, ConfigDict, Field
 
 from backline.core.runtime import Tool
-from backline.rag.reranker import Reranker, build_reranker
+from backline.rag.reranker import Reranker, get_reranker
 from backline.rag.search import SearchResult, search_chunks
 from backline.tools.artists import resolve_artist
 from backline.tools.context import ToolContext
@@ -61,8 +63,7 @@ def _resolve_reranker(ctx: ToolContext) -> Reranker | None:
         return ctx.reranker
     if ctx.settings.rerank.lower() != "on":
         return None
-    ctx.reranker = build_reranker(ctx.settings.rerank_model)
-    return ctx.reranker
+    return get_reranker(ctx.settings.rerank_model)
 
 
 def _render_hits(result: SearchResult, as_of: date, include_history: bool) -> str:

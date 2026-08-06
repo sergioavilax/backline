@@ -12,7 +12,7 @@ import asyncpg
 import pytest
 
 from backline.rag.embed import run_embed
-from backline.rag.embedder import HashingEmbedder
+from backline.rag.embedder import HashingEmbedder, get_embedder
 from backline.rag.reranker import LexicalReranker
 from backline.rag.search import search_chunks
 from tests.conftest import WorldEnv, requires_postgres
@@ -159,3 +159,17 @@ async def test_no_matches_returns_empty(pool: asyncpg.Pool) -> None:
         top_k=5,
     )
     assert isinstance(result.hits, list)  # may be empty or vector-only noise; no crash
+
+
+async def test_store_resolved_embedder_comes_from_process_cache(pool: asyncpg.Pool) -> None:
+    """With no explicit embedder, search resolves the store's recorded model through
+    the process-wide cache — repeated queries must not rebuild (with real models:
+    reload weights for) the embedder."""
+    get_embedder.cache_clear()
+    for _ in range(3):
+        result = await search_chunks(pool, "royalty rate on streaming", as_of=AS_OF, reranker=None)
+        assert result.mode == "hybrid"
+        assert result.embedder_id == HashingEmbedder.id
+    info = get_embedder.cache_info()
+    assert info.misses == 1  # one construction...
+    assert info.hits == 2  # ...shared by every later query
