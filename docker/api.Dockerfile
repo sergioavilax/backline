@@ -25,6 +25,7 @@ RUN uv sync --frozen --no-dev --no-install-project --extra embed
 COPY backline ./backline
 COPY datagen ./datagen
 COPY migrations ./migrations
+COPY config ./config
 RUN uv sync --frozen --no-dev --extra embed
 
 EXPOSE 8000
