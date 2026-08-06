@@ -1104,3 +1104,138 @@ demo batches render alike, pinned by the Playwright fixture spec
 (`ui/tests/review-real-shape.spec.ts`) and the API shape test. The cost is
 honest: a malformed amount shows as its raw text rather than pretending to
 be money.
+
+---
+
+## D-028 — Terms retrieval renders coverage, not just ranking: era inventory, query-aware snippets, supersession notes (Phase 6 verification)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** Deeper Phase 6 verification: "What's Beatriz Romano's sync rate?"
+now routes to Counsel (0.95, the D-router fix held) — and Counsel abstained,
+asserting no sync rate exists in any of her agreements, citing FBR-A-02033
+§A1 and FBR-C-00627 §3 and claiming contracts 624–627 all lack sync. Per
+WORLD_AUDIT Audit 3, FBR-C-00624 (era 1) carries a 54% sync rate. Reproduced
+against the seeded world:
+
+- The governing-document filter is **correct**: for artist 64 as of today it
+  returns all four era bases (624–627) plus FBR-A-02033, excluding only
+  627 §3 (superseded by the amendment). The suspected D-003 violation —
+  expired era deals dropped from the governing set — does **not** exist;
+  `governing_docs` never filtered on `effective_to`, and the existing
+  post-term tests hold.
+- FBR-C-00624 §3 **does** render the sync line ("(a3) 54% of Net Receipts
+  from synchronization licensing…"), its chunk is in the store, and it is
+  reachable by artist-scoped search.
+- The failure was **presentation**. Snippets were the first 240 chars of a
+  clause; a rate card's lead-in plus its first two entries fill that, so
+  every revenue-type line past the second — sync is always third or later —
+  was structurally invisible in search results (624 §3's snippet ended at
+  "(a2) 2E+1% of Ne…", scientific notation compounding, D-029). Nothing in
+  the tool output said four rate cards govern concurrently under D-003 era
+  attribution, and `read_clause` served the superseded 627 §3 with no marker
+  that an amendment had replaced it — which Counsel then cited as governing.
+  Ranking (bge) favored era-4 documents for the query; Counsel read those,
+  found no sync, generalized from truncated snippets, and abstained.
+
+**Decision.** Fix at the tool-rendering layer; agent prompts untouched
+(prompt hashes stable → live-run and eval comparability preserved).
+
+- `search_chunks` (backline/rag/search.py) returns the resolved governing
+  set (`SearchResult.governing`) for artist-scoped, non-history searches;
+  `GoverningDoc` (backline/rag/governing.py) now carries effective windows,
+  `supersedes_contract_id`, and the clauses an amendment replaces.
+- Artist-scoped `search_contracts` results open with a **governing-document
+  inventory**: every era base and effective amendment, windows, supersession
+  marks, plus one line of D-003 semantics ("each base governs recordings
+  originally released during its term; an ended term still governs its era's
+  recordings — check every era's terms before concluding a rate does not
+  exist"). Zero-hit results include the same block; an empty governing set
+  reports "No documents govern this artist as of <date>" instead of a
+  generic no-match. Ranking still decides which *clauses* surface; the
+  inventory guarantees no governing *document* is invisible.
+- Snippets are **query-aware** (`query_snippet`): the 240-char window
+  densest in query-token matches, prefix-matched ("sync" lights up
+  "synchronization"), deterministic (ties → earliest), ellipses mark cuts,
+  head fallback when nothing matches.
+- `read_clause` on a base §2/§3/§4 that an amendment's `replaced_sections`
+  covers appends: replaced by FBR-A-NNNNN (effective date) — on/after that
+  date the amendment governs.
+
+**Alternatives rejected.** Guaranteed per-era representation in `top_k`
+(quota-filling the ranked list): injects weak-relevance chunks and muddies
+ranking semantics — the inventory achieves coverage without distorting
+relevance order. Era-conditional answering via Counsel prompt changes:
+moves the prompt hash mid-verification and re-teaches what the tool can
+simply show; the existing prompt ("name the ambiguity", "snippets are for
+finding, not quoting") already composes correctly with the richer output.
+
+**Eval-scoping audit** (requested alongside the fix). The suite generator's
+`governing_terms()` resolves the *current* era only (`era_contract_for`).
+7 of 16 committed `contract_terms` rate questions anchor multi-era artists
+whose eras diverge for the asked revenue type (004, 005, 006, 008, 011,
+012, 013 — e.g. 013 spans sync 40/56/42/58% across four eras; 006's eras
+1–2 have no sync at all). They stand, for now, because: every committed
+case has the asked rate present in its current era (the generator requires
+`rate > 0`), so none can reproduce the Romano shape (old-era-only rate →
+false abstention); the T1 answer contract forces a single number, and the
+current era's rate remains the natural single-number reading with the gold
+clause pointing at that era; T1 grading compares `Decimal(...).normalize()`
+so the committed "2E+1" strings grade as 20. The committed suite is
+byte-pinned (`test_committed_suite_reproduces_exactly`) and the composite
+baseline + CI gate key on `suite_hash`; regenerating without re-recording
+the live baseline (needs `ANTHROPIC_API_KEY`) would brick the nightly gate.
+**Deferred to the next deliberate suite regeneration + re-baseline**: skip
+rate-question anchors whose eras diverge for the asked (revenue_type,
+territory) — or phrase them era-explicitly — and fold in the `_pct_str`
+fixed-point fix (D-029).
+
+**Consequence.** The Romano query's answer is now structurally reachable:
+the inventory names FBR-C-00624 in every artist-scoped result, and when its
+§3 ranks, the snippet shows the sync line itself. Pinned by
+`test_search_lists_every_era_governing_document`,
+`test_search_surfaces_terminated_era_sync_terms` (query-driven: any artist
+whose terminated era alone carries sync), `test_read_clause_notes_supersession`,
+and the `query_snippet` units. Cost: a few lines of inventory per
+artist-scoped search (bounded by the artist's document count), and richer
+tool output the agents must not treat as instructions — it stays outside
+`<document>` fences, so the §4.6 boundary holds.
+
+---
+
+## D-029 — Rates render as plain decimals everywhere; rendered-corpus golden regenerated (Phase 6 verification)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** Clause drawers and contract PDFs showed "1E+1% of Net Receipts"
+(= 10%; "3E+1%" = 30% also observed). Mechanism: `Decimal("0.1") * 100 =
+Decimal("10.0")`, and `.normalize()` — used to strip trailing zeros —
+reduces the coefficient fully, so exactly the whole-ten percentages
+(10/20/30/40%) render in scientific notation. Three surfaces shared the
+idiom: `datagen/pdfrender._pct` (the rendered corpus agents retrieve),
+`backline/tools/calc._pct` (agent-facing spot-quote output), and the suite
+generator's `_pct_str` (committed expected strings like "2E+1"). The demo
+path already formatted correctly (`:f`).
+
+**Decision.** Normalize-then-fixed-point is the one policy:
+`f"{(rate * 100).normalize():f}%"` — trailing-zero stripping without
+scientific notation — applied to `pdfrender._pct` and `calc._pct`.
+The rendered corpus regenerated: 171 contracts (342 files with their .txt
+sidecars) change; **all 17 table hashes are unchanged** — in particular
+`truth.expected_ledger` and `label.contract_terms` — so the answer key and
+canonical terms are untouched (the bug was display-only; rates live as
+"0.1"-style strings in terms JSON). `tests/golden/world_fingerprint.json`
+regenerated deliberately: combined `313a2fbc…` → `33b4e62e…`, files-section
+diff is exactly the 171 affected contracts. `_pct_str` in the eval
+generator is left byte-frozen with the committed suite (D-028's audit:
+grading normalizes, so "2E+1" ≡ 20); the fix folds into the next deliberate
+suite regeneration.
+
+**Consequence.** Agents and reviewers read "10%", never "1E+1%" — the
+Romano-era snippet that once showed "(a2) 2E+1% of Ne…" now reads
+"(a2) 20% of Net Receipts…". Guarded by `TestRateRendering` (unit cases
+plus a corpus-wide scan asserting no rendered contract contains scientific
+notation) and the calc `_pct` unit. **Operator action after pulling:
+`make seed && make embed`** — the on-disk corpus must re-render and the
+chunk store re-reconcile (content-hash keyed, so the 171 changed contracts'
+clauses re-chunk and re-embed; unchanged chunks keep their embeddings).
