@@ -892,3 +892,53 @@ compose's `DATA_DIR=/data`, tests' `tmp_path` — pass through untouched, so
 deployment configuration stays authoritative and the anchor only replaces the
 accidental CWD dependence. Tested with a chdir-into-tmp regression test
 mirroring the observed nesting.
+
+## D-023 — First live baseline is a composite; `evals compose` is the sanctioned path (eval close-out)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** The diagnosis arc (D-017..D-022) ended with the latest valid
+measurement of each category spread across three runs of the same committed
+suite `6eef41c6706f309a`: eight categories from full run 2b9f39fb (trace-
+adjudicated — every diagnosed failure outside them was a harness artifact),
+abstention 100.0 from 127c5ad8 (D-020), multi_step 72.8 from c804b338. The
+gate's `--write-baseline` consumes exactly one summary, so recording that state
+meant either hand-editing `baseline.json` (bypassing every check the file
+exists to enforce) or spending ~$11 on a fresh full run to re-measure numbers
+whose validity is already on the record.
+
+**Decisions.**
+
+- **Composition is legitimate exactly when the result is indistinguishable
+  from a real, complete run of the committed suite.** The gate's staleness
+  identity is `(model, track, subset)` + pinned `suite_hash` (D-016) —
+  deliberately not `git_sha`, or every harness fix would orphan the baseline.
+  So summaries may merge iff they agree on the whole identity tuple; the
+  shared hash matches the committed suite composed against; every contributed
+  category carries the subset's complete question count (partial categories
+  never contribute — the same rule that keeps budget-exhausted runs out of
+  the gate); and the merged set covers the subset's categories exactly.
+  `evals/compose.py` enforces all of it; each rule has a refusal test.
+- **Later components override earlier ones per whole category** (CLI order,
+  oldest first) — the shape of a diagnose → fix → re-run history, where each
+  targeted `--categories` re-run supersedes what it re-measured. Overrides
+  move whole categories only, so score-level cherry-picking is impossible,
+  and every override is visible in the recorded provenance.
+- **Provenance is part of the entry.** The composed entry's `git_sha` is the
+  newest component's (the code state the baseline is asserted valid for), and
+  the note records `run@sha: categories` for every component. An entry that
+  cannot say where each number came from is not auditable.
+- **`python -m evals compose` is the only sanctioned path for multi-run
+  baselines** — hand edits to `evals/results/baseline.json` stay out of
+  bounds. Method choice for this first live baseline: composite over a fresh
+  full run — re-measurement is warranted when a fix could have moved a
+  category, not to re-price standing numbers (D-020's measure-don't-guess
+  principle, applied to eval spend).
+
+**Consequence.** The first live `(claude-sonnet-5, platform, full)` entry is
+composed from 2b9f39fb + 127c5ad8 + c804b338, in that order (ddb797dc
+contributes nothing — its multi_step results were invalidated by D-021).
+Future targeted re-runs can refresh single categories through the same door,
+always leaving a complete, provenanced entry. The gate itself is unchanged; a
+single full-run summary still flows through `gate --write-baseline` as before
+(and `compose` with one summary doubles as a completeness check for it).
