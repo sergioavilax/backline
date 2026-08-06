@@ -5,6 +5,7 @@
         [--track platform|b0|b1] [--gate-subset] [--judge MODEL] [--resume RUN_ID]
     python -m evals smoke [--write-baseline]           # keyless mock plumbing test
     python -m evals gate --summary PATH [--write-baseline]
+    python -m evals compose --summary PATH [PATH ...] [--write-baseline]
     python -m evals report --summary PATH [PATH ...]
 
 ``run`` needs a seeded database and a real provider key (ANTHROPIC_API_KEY or an
@@ -187,6 +188,52 @@ def _cmd_gate(argv: list[str]) -> int:
     return 0 if result.passed else 1
 
 
+def _cmd_compose(argv: list[str]) -> int:
+    from evals.compose import ComposeError, compose_summaries, provenance_note, render_composite
+    from evals.gate import BASELINE_PATH, write_baseline
+    from evals.report import load_summary
+
+    parser = argparse.ArgumentParser(
+        prog="evals compose",
+        description="Merge targeted category re-runs into one gate-ready summary (D-023).",
+    )
+    parser.add_argument(
+        "--summary",
+        type=Path,
+        nargs="+",
+        required=True,
+        help="summary.json files, oldest first — later files override per whole category",
+    )
+    parser.add_argument("--suite", default="core", help="committed suite to compose against")
+    parser.add_argument("--baseline", type=Path, default=BASELINE_PATH)
+    parser.add_argument(
+        "--write-baseline",
+        action="store_true",
+        help="record the composite as the baseline for its (model, track, subset)",
+    )
+    parser.add_argument("--note", default="", help="note stored ahead of the provenance line")
+    args = parser.parse_args(argv)
+
+    suite = load_suite(args.suite)
+    try:
+        composed = compose_summaries([load_summary(path) for path in args.summary], suite)
+    except ComposeError as err:
+        print(f"compose refused: {err}", file=sys.stderr)
+        return 2
+    print(render_composite(composed))
+    if not args.write_baseline:
+        print("(dry run — pass --write-baseline to record it)")
+        return 0
+    provenance = provenance_note(composed)
+    note = f"{args.note} · {provenance}" if args.note else provenance
+    entry = write_baseline(composed, path=args.baseline, note=note)
+    print(
+        f"baseline updated for ({entry['model']}, {entry['track']}, {entry['subset']}) "
+        f"→ {args.baseline}"
+    )
+    return 0
+
+
 def _cmd_report(argv: list[str]) -> int:
     from evals.report import load_summary, render_compare, render_markdown
 
@@ -212,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         "run": _cmd_run,
         "smoke": _cmd_smoke,
         "gate": _cmd_gate,
+        "compose": _cmd_compose,
         "report": _cmd_report,
     }
     if not argv or argv[0] in {"-h", "--help"}:
