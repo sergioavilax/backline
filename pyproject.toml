@@ -24,8 +24,28 @@ dependencies = [
 # CPU-side via sentence-transformers — a heavy dependency (torch). It is optional so
 # keyless CI and unit tests stay light; the Docker image and dev machines that build
 # real embeddings install `--extra embed`. Offline environments use EMBED_MODEL=hash.
+# torch is declared here (not just transitively via sentence-transformers) so the
+# pytorch-cpu index pin below binds it: PyPI's linux torch wheels are CUDA builds,
+# while this stack is CPU-only by design (D-011).
 [project.optional-dependencies]
-embed = ["sentence-transformers>=3.2"]
+embed = ["sentence-transformers>=3.2", "torch>=2.2"]
+
+# CPU-only torch (the D-011 re-lock): resolve torch from the PyTorch CPU wheel index
+# instead of PyPI, so `--extra embed` installs ~200 MB of CPU wheels instead of ~5 GB
+# of CUDA builds and the Docker image can ship real embedding models. The block is
+# staged here but commented out because build sandboxes cannot reach
+# download.pytorch.org (403 host_not_allowed — verified 2026-08-06, see PHASE_LOG
+# Phase 4 pre-tasks) and an index pin the environment can't fetch would break every
+# implicit `uv lock`. On a network that reaches it: uncomment, run `uv lock`, and add
+# `--extra embed` to both `uv sync` lines in docker/api.Dockerfile.
+#
+# [tool.uv.sources]
+# torch = [{ index = "pytorch-cpu" }]
+#
+# [[tool.uv.index]]
+# name = "pytorch-cpu"
+# url = "https://download.pytorch.org/whl/cpu"
+# explicit = true
 
 [dependency-groups]
 dev = [

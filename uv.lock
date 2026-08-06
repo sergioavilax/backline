@@ -159,6 +159,7 @@ dependencies = [
 [package.optional-dependencies]
 embed = [
     { name = "sentence-transformers" },
+    { name = "torch" },
 ]
 
 [package.dev-dependencies]
@@ -187,6 +188,7 @@ requires-dist = [
     { name = "sentence-transformers", marker = "extra == 'embed'", specifier = ">=3.2" },
     { name = "sqlglot", specifier = ">=27.29" },
     { name = "tiktoken", specifier = ">=0.8" },
+    { name = "torch", marker = "extra == 'embed'", specifier = ">=2.2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 provides-extras = ["embed"]
