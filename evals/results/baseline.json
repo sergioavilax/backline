@@ -3,6 +3,27 @@
   {
    "categories": {
     "abstention": 100.0,
+    "adversarial": 93.33,
+    "catalog_lookup": 100.0,
+    "contract_terms": 85.0,
+    "cross_collateral": 100.0,
+    "multi_step": 72.78,
+    "reconciliation": 96.67,
+    "recoupment_state": 100.0,
+    "royalty_math": 100.0,
+    "sql_analytics": 100.0
+   },
+   "git_sha": "6567d9ad9cba",
+   "model": "claude-sonnet-5",
+   "note": "first live baseline (post-diagnosis composite) \u00b7 composed from 2b9f39fb@ce30e7b4d2cd: catalog_lookup, contract_terms, royalty_math, recoupment_state, cross_collateral, sql_analytics, reconciliation, adversarial + c804b338@6567d9ad9cba: multi_step + 127c5ad8@fa43dc484e43: abstention",
+   "recorded_at": "2026-08-06",
+   "subset": "full",
+   "suite_hash": "6eef41c6706f309a",
+   "track": "platform"
+  },
+  {
+   "categories": {
+    "abstention": 100.0,
     "adversarial": 100.0,
     "catalog_lookup": 100.0,
     "contract_terms": 100.0,
