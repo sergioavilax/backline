@@ -51,6 +51,15 @@ jobs:
         run: >-
           uv run pytest tests/royaltycalc -q --cov=backline.royaltycalc
           --cov-branch --cov-fail-under=95
+      # Suite-drift gate: regenerating the committed question suite must reproduce
+      # it byte-for-byte (same discipline as the world fingerprint).
+      - name: eval suite drift check
+        run: uv run python -m evals generate --check
+      # §5.4: keyless MockProvider end-to-end plumbing test on every PR — the whole
+      # harness (agents, tools, scorers, runner, gate) against the committed mock
+      # baseline, no API key involved.
+      - name: eval-smoke (keyless, gated vs committed baseline)
+        run: make eval-smoke
 
   ui:
     name: ui lint + build
@@ -72,25 +81,78 @@ jobs:
       - run: pnpm lint
       - run: pnpm build
 
-  # Stub until Phase 5. The real job runs the eval suite on the self-hosted
-  # runner and fails on category regressions >3 pts or T2 violations. The
-  # secret check lives at step level (secrets aren't available in job-level
-  # `if`), so forks and keyless PRs stay green.
+  # §5.4: the live eval regression gate. Runs the budget-capped gate subset on the
+  # planner-tier model and fails the job when any category drops >3 pts against
+  # evals/results/baseline.json or any T2 violation appears (`evals gate`).
+  # The secret check lives at step level (secrets aren't available in job-level
+  # `if`), so forks and keyless PRs stay green. BUILD_PLAN names a self-hosted
+  # runner for this job; until one is registered the GitHub-hosted runner does the
+  # same work — flip `runs-on: [self-hosted]` when it exists.
   eval-regression:
-    name: eval regression (stubbed)
+    name: eval regression (live, secret-gated)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: backline
+          POSTGRES_PASSWORD: backline
+          POSTGRES_DB: backline
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U backline -d backline"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://backline:backline@localhost:5432/backline
     steps:
       - name: Check for API key
         id: keycheck
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          if [ -n "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
             echo "have_key=true" >> "$GITHUB_OUTPUT"
           else
             echo "have_key=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Eval regression (Phase 5 makes this real)
+      - uses: actions/checkout@v4
         if: steps.keycheck.outputs.have_key == 'true'
-        run: echo "ANTHROPIC_API_KEY present — Phase 5 will run 'evals run --suite core' here with regression thresholds."
+      - uses: astral-sh/setup-uv@v5
+        if: steps.keycheck.outputs.have_key == 'true'
+        with:
+          enable-cache: true
+      # CPU-wheel torch (D-011): the real embedding stack runs on the runner.
+      - name: Install (with embed extra)
+        if: steps.keycheck.outputs.have_key == 'true'
+        run: uv sync --frozen --extra embed
+      - name: Cache embedding models
+        if: steps.keycheck.outputs.have_key == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-${{ runner.os }}-bge-small-msmarco
+      - name: Seed world + build embeddings
+        if: steps.keycheck.outputs.have_key == 'true'
+        run: |
+          uv run python -m datagen seed
+          uv run python -m backline.rag.embed
+      - name: Run gate subset + regression gate
+        if: steps.keycheck.outputs.have_key == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: >-
+          uv run python -m evals run --suite core --gate-subset
+          --model claude-sonnet-5 --budget 5.00 --yes --gate
+      - name: Upload eval artifacts
+        if: steps.keycheck.outputs.have_key == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-regression-results
+          path: data/evals/
+          if-no-files-found: ignore
       - name: Skipped (no key)
         if: steps.keycheck.outputs.have_key == 'false'
-        run: echo "No ANTHROPIC_API_KEY secret available — eval regression stub skipped (expected on forks)."
+        run: echo "No ANTHROPIC_API_KEY secret — live eval regression skipped (expected on forks)."

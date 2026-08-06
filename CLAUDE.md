@@ -57,8 +57,9 @@ before doing anything; this file is the operational summary that governs every s
 - Phase log: `docs/PHASE_LOG.md` — append at the end of every phase.
 - Job-spec traceability: `docs/TRACEABILITY.md`.
 - Make targets: `make help` (`up`, `test`, `lint`, `typecheck`, `doctor`, `seed`,
-  `emit-period`, `corpus-tokens`, `embed`, `retrieval-probe`; `eval-smoke` is a
-  phase-gated stub until Phase 5 ships).
+  `emit-period`, `corpus-tokens`, `embed`, `retrieval-probe`, `eval-smoke`,
+  `eval-suite`). The eval harness CLI is `python -m evals` (generate / run / smoke /
+  gate / report).
 
 ## Commands
 

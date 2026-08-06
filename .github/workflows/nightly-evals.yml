@@ -1,0 +1,84 @@
+# §5.4: nightly full-suite eval on main — every question, all three tiers, gated
+# against evals/results/baseline.json (bootstrap-passes until a full-run baseline is
+# recorded). Secret-gated at step level exactly like ci.yml's eval-regression job,
+# so the workflow is green (skipped) on forks and keyless clones.
+name: nightly-evals
+
+on:
+  schedule:
+    - cron: "0 7 * * *"  # 07:00 UTC nightly
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: "USD hard cap for the run"
+        default: "15.00"
+        required: false
+
+jobs:
+  full-suite:
+    name: full suite (live, secret-gated)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: backline
+          POSTGRES_PASSWORD: backline
+          POSTGRES_DB: backline
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U backline -d backline"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://backline:backline@localhost:5432/backline
+    steps:
+      - name: Check for API key
+        id: keycheck
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "have_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_key=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.keycheck.outputs.have_key == 'true'
+      - uses: astral-sh/setup-uv@v5
+        if: steps.keycheck.outputs.have_key == 'true'
+        with:
+          enable-cache: true
+      - name: Install (with embed extra)
+        if: steps.keycheck.outputs.have_key == 'true'
+        run: uv sync --frozen --extra embed
+      - name: Cache embedding models
+        if: steps.keycheck.outputs.have_key == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-${{ runner.os }}-bge-small-msmarco
+      - name: Seed world + build embeddings
+        if: steps.keycheck.outputs.have_key == 'true'
+        run: |
+          uv run python -m datagen seed
+          uv run python -m backline.rag.embed
+      - name: Run full suite + regression gate
+        if: steps.keycheck.outputs.have_key == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: >-
+          uv run python -m evals run --suite core --model claude-sonnet-5
+          --budget ${{ github.event.inputs.budget || '15.00' }} --yes --gate
+      - name: Upload eval artifacts
+        if: steps.keycheck.outputs.have_key == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-eval-results
+          path: data/evals/
+          if-no-files-found: ignore
+      - name: Skipped (no key)
+        if: steps.keycheck.outputs.have_key == 'false'
+        run: echo "No ANTHROPIC_API_KEY secret — nightly eval skipped."

@@ -1,6 +1,6 @@
 # Backline — developer entry points. `make help` lists targets.
 .DEFAULT_GOAL := help
-.PHONY: help up down logs ps test lint typecheck fmt doctor seed emit-period embed retrieval-probe eval-smoke corpus-tokens
+.PHONY: help up down logs ps test lint typecheck fmt doctor seed emit-period embed retrieval-probe eval-smoke eval-suite corpus-tokens
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -50,6 +50,8 @@ embed: ## Build clause chunks + embeddings (idempotent; EMBED_MODEL=hash for off
 retrieval-probe: ## Measure retrieval quality (recall@k/MRR, rerank on vs off)
 	uv run python -m evals.retrieval_probe
 
-# ── Phase-gated targets (stubs fail loudly until their phase ships) ──────────
-eval-smoke: ## Keyless MockProvider eval plumbing test (Phase 5)
-	@echo "make eval-smoke: not implemented yet — ships in Phase 5 (evals)." >&2; exit 1
+eval-smoke: ## Keyless MockProvider eval plumbing test (seeds --if-empty; gates vs baseline)
+	uv run python -m evals smoke
+
+eval-suite: ## Regenerate evals/suites/core.json from the answer key (--check in CI)
+	uv run python -m evals generate
