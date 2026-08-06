@@ -1406,3 +1406,58 @@ Suite state: full pytest green against Postgres (558 passed locally, pg16 +
 pgvector, seeded world), ruff + `mypy --strict` clean, `evals generate
 --check` untouched (suite and baselines byte-identical — the sweep reads the
 committed suite, never regenerates it). One PR.
+
+## Inter-phase (post-Phase 7) — opus-row outage contamination: quarantine + `--retry-errors` (D-032) · 2026-08-06
+
+**What happened.** The operator's first live sweep hit an Anthropic
+usage-limit outage mid-way through the opus row: the account limit tripped
+with ten reconciliation questions in flight, the API answered 400 for each,
+and the runner scored all ten `t1 failure: run_error` — zeros. Because resume
+skips any question with scored rows, re-entering the run could never touch
+them, and the row's committed document read `complete: true` with
+`runs: {completed: 123, error: 10}` and reconciliation at 30.0 (eval run
+`ff1213b8-8e3b-4675-9933-cb6dfc6f37e3`). A provider outage had been frozen in
+as model incapability — the exact dishonesty the harness exists to prevent.
+
+**What shipped** (one PR, all keyless-testable):
+
+- **Infra-error quarantine (D-032).** `run_error`/`harness_error` questions
+  (`INFRA_FAILURES`, `evals/runner.py`) leave every accuracy aggregate —
+  category scores, tier means, T2-violation counts, latency percentiles — and
+  surface in a first-class `errors` bucket (`{n, question_ids, by_category}`)
+  in `summary.json`, `app.eval_runs.summary`, and the per-model results
+  document. `run_exhausted` stays a legitimate (model-behavior) failure.
+- **Visible everywhere.** `evals report` and REPORT.md mark affected
+  rows/categories with ‡ and print the heal command; a fully-errored category
+  renders `— ‡`, never a fake zero; the scored cell subtracts quarantined
+  questions (`123/133 ‡`); the frontier chart keeps excluding non-complete
+  rows. The gate fails on `errors.n > 0` (same footing as budget-exhausted);
+  `compose` refuses errored buckets by its existing full-count rule.
+- **The heal path.** `python -m evals run --resume <id> --retry-errors` and
+  `python benchmarks/run_sweep.py --model <m> [--resume <id>] --retry-errors`
+  supersede exactly the infra-errored rows (DB rows deleted, `results.jsonl`
+  lines dropped) and re-execute those questions under the same
+  `eval_run_id`; legitimately-scored rows keep their primary keys. A results
+  doc with quarantined errors is now `complete: false`, so the sweep skip-done
+  check can't freeze an outage in and the row's state entry survives; a heal
+  with no resumable run refuses loudly at every layer (runner, sweep row,
+  stale-state path) — never a silent fresh full-price re-measure. The sweep
+  CLI bypasses skip-done under `--resume`/`--retry-errors` (pre-D-032 docs
+  still read complete).
+- **Tests** (12 new; suite green): scripted-outage runs on the mini suite and
+  the smoke-slice sweep — quarantine shape, t2_violations unpolluted, heal
+  restores the same eval run with clean rows' primary keys untouched, wrong
+  answers and cap-outs never retried, artifact mirrors the healed state,
+  results doc `complete: false` → state retained → state-resumed heal →
+  document + report rewritten, refusal without a resumable run, gate/report/
+  doc rendering, CLI flag validation.
+
+**Deferred (operator actions, real key + real dollars):** heal the opus row —
+`python benchmarks/run_sweep.py --model claude-opus-5 --resume
+ff1213b8-8e3b-4675-9933-cb6dfc6f37e3 --retry-errors` (ten reconciler
+questions; reconciliation carries no T3 so no judge spend — ≈ $8 projected,
+≤ $25 if every run hits the $2.50 per-run cap, against the row's $35; the
+same invocation rewrites `claude-opus-5.json`, `REPORT.md`,
+`comparison.svg`) — then commit the regenerated artifacts and re-check
+BENCHMARK_NOTES §3.5 against the healed row. Not started: Phase 8; the
+committed suite and baselines are untouched.

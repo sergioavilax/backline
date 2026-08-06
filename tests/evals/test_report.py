@@ -47,3 +47,36 @@ def test_render_compare_lines_up_tracks() -> None:
     assert "| royalty_math | 10.0 | 95.0 |" in text
     assert "b0/mock-sonnet (smoke)" in text and "platform/mock-sonnet (smoke)" in text
     assert "| **overall** |" in text
+    assert "‡" not in text  # no quarantined errors, no footnote noise
+
+
+def test_render_markdown_quarantines_infra_errors() -> None:
+    """D-032: quarantined questions are named, excluded, and carry the heal hint —
+    a provider outage can never read as a silent category collapse."""
+    from evals.report import render_markdown
+
+    summary = _summary("platform", 90.0)
+    # Two royalty_math questions errored out of the bucket; abstention errored whole.
+    summary["categories"].pop("abstention")
+    summary["errors"] = {
+        "n": 3,
+        "question_ids": ["rm-07", "rm-11", "hand-abstention-01"],
+        "by_category": {"abstention": 1, "royalty_math": 2},
+    }
+    text = render_markdown(summary)
+    assert "‡ 3 infra-errored question(s) quarantined" in text
+    assert "abstention x1, royalty_math x2" in text
+    assert "--retry-errors" in text
+    assert "| royalty_math ‡ | 2 | 90.0 |" in text  # surviving bucket, marked
+    assert "| abstention ‡ | 0 | — |" in text  # fully-errored category stays visible
+    assert " ‡" in text.splitlines()[0]  # the run label itself carries the mark
+
+
+def test_render_compare_marks_errored_runs() -> None:
+    from evals.report import render_compare
+
+    errored = _summary("platform", 95.0)
+    errored["errors"] = {"n": 1, "question_ids": ["q"], "by_category": {"royalty_math": 1}}
+    text = render_compare([_summary("b0", 10.0), errored])
+    assert "platform/mock-sonnet (smoke) ‡" in text
+    assert "quarantined infra-errored questions" in text

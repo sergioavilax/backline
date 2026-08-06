@@ -2,7 +2,8 @@
 
     python -m evals generate [--check] [--load-db]     # build/verify the suite
     python -m evals run --suite core --model claude-sonnet-5 --budget 5.00 \
-        [--track platform|b0|b1] [--gate-subset] [--judge MODEL] [--resume RUN_ID]
+        [--track platform|b0|b1] [--gate-subset] [--judge MODEL] [--resume RUN_ID] \
+        [--retry-errors]
     python -m evals smoke [--write-baseline]           # keyless mock plumbing test
     python -m evals gate --summary PATH [--write-baseline]
     python -m evals compose --summary PATH [PATH ...] [--write-baseline]
@@ -101,6 +102,7 @@ async def _run_async(args: argparse.Namespace, suite: Suite) -> int:
             out_dir=Path(args.out),
             data_dir=settings.data_path,
             resume_run_id=uuid.UUID(args.resume) if args.resume else None,
+            retry_errors=args.retry_errors,
             pack_tokens=args.pack_tokens,
         )
         try:
@@ -143,6 +145,13 @@ def _cmd_run(argv: list[str]) -> int:
     parser.add_argument("--judge", default=None, help="T3 judge model (default: JUDGE_MODEL)")
     parser.add_argument("--no-judge", action="store_true", help="skip T3 entirely")
     parser.add_argument("--resume", default=None, help="eval run id to resume")
+    parser.add_argument(
+        "--retry-errors",
+        action="store_true",
+        help="with --resume: supersede infra-errored rows (run_error/harness_error) "
+        "and re-execute those questions in the same eval run (D-032); "
+        "legitimately-scored rows are never touched",
+    )
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--out", default="data/evals")
     parser.add_argument(
@@ -152,6 +161,8 @@ def _cmd_run(argv: list[str]) -> int:
         "--gate", action="store_true", help="also evaluate the regression gate; exit 1 on failure"
     )
     args = parser.parse_args(argv)
+    if args.retry_errors and not args.resume:
+        parser.error("--retry-errors needs --resume (a fresh run has no errored rows)")
     if args.budget is None:
         from backline.config import get_settings
 

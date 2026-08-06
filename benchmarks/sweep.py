@@ -262,7 +262,17 @@ def build_results_doc(
     total_cost = Decimal(str(summary["total_cost_usd"]))
     agent_cost = metrics.agent_cost_usd
     judge_cost = total_cost - agent_cost
-    complete = n_scored == int(summary["n_questions"]) and not summary.get("budget_exhausted")
+    # Quarantined infra errors (D-032) keep a row from reading complete: their
+    # questions have rows but no measurement, so the row stays resumable
+    # (`--resume <eval_run_id> --retry-errors`) instead of freezing the outage in.
+    errors: dict[str, Any] = dict(
+        summary.get("errors") or {"n": 0, "question_ids": [], "by_category": {}}
+    )
+    complete = (
+        n_scored == int(summary["n_questions"])
+        and not summary.get("budget_exhausted")
+        and not int(errors.get("n", 0))
+    )
 
     def per_query(amount: Decimal) -> str | None:
         if not n_scored:
@@ -290,6 +300,7 @@ def build_results_doc(
         "n_skipped_budget": int(summary.get("n_skipped_budget", 0)),
         "budget_usd": str(row.budget_usd) if not row.uncapped else "0 (uncapped)",
         "budget_exhausted": bool(summary.get("budget_exhausted")),
+        "errors": errors,
         "complete": complete,
         "categories": summary["categories"],
         "overall_score": overall_score(summary["categories"]),
@@ -400,7 +411,9 @@ class RowOutcome:
     @property
     def complete(self) -> bool:
         return (
-            self.summary.n_scored == self.summary.n_questions and not self.summary.budget_exhausted
+            self.summary.n_scored == self.summary.n_questions
+            and not self.summary.budget_exhausted
+            and not int(self.summary.errors.get("n", 0))
         )
 
 
@@ -452,11 +465,17 @@ async def run_row(
     no_judge: bool = False,
     subset: Literal["gate", "smoke"] | None = None,
     fresh: bool = False,
+    retry_errors: bool = False,
 ) -> RowOutcome:
     """Run one model row end-to-end: eval run → trace aggregates → results JSON.
 
     Dry passes (``subset`` set) run the same pipeline but never write to
     ``results_dir`` or the state file — the committed artifacts are full-suite only.
+
+    ``retry_errors`` rides the resume path (explicit ``resume_run_id`` or sweep
+    state): infra-errored questions are superseded and re-executed in the same eval
+    run (D-032). It refuses to fall through to a fresh run — a heal must never turn
+    into a silent full-price re-measure.
     """
     effective_row = (
         row if budget_override is None else SweepRow(model=row.model, budget_usd=budget_override)
@@ -471,6 +490,11 @@ async def run_row(
             resumed_from_state = True
             print(f"[{row.model}] resuming eval run {resume_run_id} from sweep state")
     if resume_run_id is None:
+        if retry_errors:
+            raise ValueError(
+                f"[{row.model}] --retry-errors needs a run to heal — no sweep state "
+                f"entry for this row; pass --resume <eval_run_id>"
+            )
         resume_run_id = await _mint_eval_run(ctx, row, subset)
         if state_file is not None and subset is None:
             state[row.model] = {
@@ -494,15 +518,19 @@ async def run_row(
             out_dir=ctx.out_dir,
             data_dir=ctx.settings.data_path,
             resume_run_id=run_id,
+            retry_errors=retry_errors,
         )
 
     try:
         summary = await ctx.runner.run(config_for(resume_run_id))
     except ValueError:
-        if not resumed_from_state:
+        if not resumed_from_state or retry_errors:
+            # An explicit --resume stays a loud error, and so does a heal whose
+            # run is gone — self-healing to a fresh full-price run is exactly the
+            # accident retry_errors exists to prevent.
             raise
         # The state file outlived its eval run (reset DB, hand-deleted rows).
-        # An explicit --resume stays a loud error; sweep state self-heals.
+        # Sweep state self-heals.
         print(f"[{row.model}] stale sweep state — eval run gone; starting fresh")
         if state_file is not None:
             state = load_state(state_file)

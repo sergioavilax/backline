@@ -3,6 +3,7 @@
     python benchmarks/run_sweep.py                     # the committed API matrix, in order
     python benchmarks/run_sweep.py --model local-qwen --budget 0 --yes   # LOCAL.md row
     python benchmarks/run_sweep.py --model claude-opus-5 --resume <eval_run_id>
+    python benchmarks/run_sweep.py --model claude-opus-5 --resume <id> --retry-errors
     python benchmarks/run_sweep.py --subset smoke --yes    # 10-question live dry pass
 
 Unattended and resumable: rows run sequentially (honest latencies — no cross-model
@@ -72,6 +73,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="ignore sweep state and prior results; start the row(s) from scratch",
     )
     parser.add_argument("--resume", default=None, help="eval run id to resume (needs --model)")
+    parser.add_argument(
+        "--retry-errors",
+        action="store_true",
+        help="heal a row: supersede infra-errored (run_error/harness_error) questions "
+        "and re-execute them in the same eval run (needs --model; resumes via "
+        "--resume or sweep state) — D-032",
+    )
     parser.add_argument("--judge", default=None, help="override the matrix judge model")
     parser.add_argument(
         "--no-judge",
@@ -99,6 +107,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--budget needs --model (matrix rows carry their own budgets)")
     if args.resume is not None and args.model is None:
         parser.error("--resume needs --model")
+    if args.retry_errors and args.model is None:
+        parser.error("--retry-errors needs --model (heal one row at a time)")
     if args.judge is not None and args.no_judge:
         parser.error("--judge and --no-judge are mutually exclusive")
     return args
@@ -207,7 +217,11 @@ async def _run(args: argparse.Namespace) -> int:
         for index, row in enumerate(rows, start=1):
             cap = "uncapped" if row.uncapped else f"${row.budget_usd}"
             print(f"\n=== sweep row {index}/{len(rows)}: {row.model} · cap {cap} ===")
-            if not args.fresh and args.subset is None:
+            # An explicit --resume or --retry-errors overrides the skip-done check:
+            # the committed doc may predate D-032 (an outage frozen in as
+            # complete), and the operator is deliberately re-entering the run.
+            revisiting = args.resume is not None or args.retry_errors
+            if not args.fresh and args.subset is None and not revisiting:
                 done = completed_results(args.out, row.model, suite.suite_hash)
                 if done is not None:
                     print(
@@ -226,6 +240,7 @@ async def _run(args: argparse.Namespace) -> int:
                     no_judge=args.no_judge,
                     subset=args.subset,
                     fresh=args.fresh,
+                    retry_errors=args.retry_errors,
                 )
             except BudgetRefused as refused:
                 # A refusal means projections moved past the committed caps — stop
@@ -247,11 +262,14 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"\nsweep spend this invocation: ${total}")
         if partial:
             for o in partial:
+                errored = int(o.summary.errors.get("n", 0))
+                flag = " --retry-errors" if errored else ""
+                note = f" ({errored} infra-errored, quarantined)" if errored else ""
                 print(
                     f"partial: {o.row.model} scored {o.summary.n_scored}/"
-                    f"{o.summary.n_questions} — resume with\n"
+                    f"{o.summary.n_questions}{note} — resume with\n"
                     f"  python benchmarks/run_sweep.py --model {o.row.model} "
-                    f"--resume {o.summary.eval_run_id}"
+                    f"--resume {o.summary.eval_run_id}{flag}"
                 )
             return 1
         return 0

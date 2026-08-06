@@ -1382,3 +1382,70 @@ documented command later. Cross-model comparability holds by construction
 (same config, same judge, same suite hash), and any future cap-normalized
 opus re-run is a deliberate second experiment — new budget authorization, new
 DECISIONS entry — not a quiet knob turn.
+
+## D-032 — Infrastructure errors are quarantined, never scored; `--retry-errors` heals them in place (post-Phase 7)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** The first live sweep's opus row hit a mid-run Anthropic usage-limit
+outage: the account limit tripped while ten reconciliation questions were in
+flight, the API returned 400s, the runtime recorded `status="error"` runs, and
+the T1 scorer stamped each one `failure: run_error` — a zero. Resume then
+treated those rows as done (scored-is-scored), and the committed results
+document read `complete: true` with `runs: {completed: 123, error: 10}` and
+reconciliation at 30.0 (eval run `ff1213b8`). Nothing broke by its own rules;
+the rules simply had no concept of "the measurement never happened," so a
+provider outage froze into the artifact wearing a model-incapability costume.
+
+**Decisions.**
+
+- **The taxonomy line: `run_error` and `harness_error` are infrastructure;
+  `run_exhausted` is model behavior.** A run that died on a `ProviderError`, or
+  a question whose harness raised, produced *no measurement* of the model. A
+  run stopped by the iteration/budget caps measured exactly what the sweep
+  methodology says it measures (D-031's honesty companion). The set is one
+  constant, `INFRA_FAILURES` in `evals/runner.py`; the scorer's failure
+  strings are the shared contract.
+- **Quarantine, not zeros.** `_summarize` excludes infra-errored questions
+  from category scores, tier means, T2-violation counts, and latency
+  percentiles, and accounts for them in a first-class `errors` bucket
+  (`{n, question_ids, by_category}`) carried through the summary, the results
+  document, and both report renderers (‡ markers, heal-command footnotes;
+  a fully-errored category renders `— ‡`, never a fake zero). They still count
+  in `n_scored` (rows exist) and their partial spend stays in
+  `total_cost_usd` — bookkeeping is not measurement. The regression gate fails
+  on `errors.n > 0` on the same footing as a budget-exhausted partial run, and
+  a results document with quarantined errors is `complete: false`, so the
+  sweep's skip-done check cannot freeze an outage in and the row's sweep-state
+  entry survives for the heal.
+- **`--retry-errors` supersedes in place, same lineage.** `python -m evals run
+  --resume <id> --retry-errors` (and `benchmarks/run_sweep.py --model <m>
+  [--resume <id>] --retry-errors`) deletes only the infra-errored questions'
+  `app.eval_results` rows, drops their `results.jsonl` lines, and re-executes
+  exactly those questions under the same `eval_run_id`. Legitimately-scored
+  rows — passes, wrong answers, cap-outs — keep their primary keys, asserted
+  in tests. Supersede-not-append because a second row per (question, tier)
+  would make the summary nondeterministic; delete-not-tombstone because the
+  trace store (`app.runs`/`app.spans`) already keeps the dead runs as the
+  permanent record of what the outage cost.
+- **A heal can never fall through to an accidental re-measure.** `retry_errors`
+  without a resumable run refuses loudly at every layer: the runner (no
+  `resume_run_id`), the sweep row (no state entry → "pass --resume"), and the
+  stale-state path (which normally self-heals to a fresh run) all raise —
+  a silent fresh full-price row is exactly the accident the flag exists to
+  prevent. The sweep CLI bypasses its skip-done check under
+  `--resume`/`--retry-errors`, because the document being revisited may
+  predate this decision and still read complete.
+
+**Consequence.** The contaminated opus row heals with one command —
+`python benchmarks/run_sweep.py --model claude-opus-5 --resume
+ff1213b8-8e3b-4675-9933-cb6dfc6f37e3 --retry-errors` — which re-runs the ten
+reconciliation questions under the row's own $35 cap (the pinned judge stays
+configured, but reconciliation carries no T3, so the heal is agent-loop spend:
+≈ $8 projected, ≤ $25 if every run hits the D-020 $2.50 per-run cap), rewrites
+`benchmarks/results/claude-opus-5.json`, and regenerates `REPORT.md` +
+`comparison.svg` in the same invocation. The principle is now structural:
+provider outages are visible everywhere downstream (‡), excluded from accuracy
+everywhere, and cheap to heal — they can no longer masquerade as model
+incapability. Pre-D-032 summaries (no `errors` key) read as clean; the remedy
+for a pre-D-032 contaminated artifact is the heal itself.

@@ -82,6 +82,35 @@ cap-censored at $2.50. The whole diagnosis arc found **zero agent
 hallucinations** — every zero traced to the harness — so sweep-row differences
 can be read as model differences with unusual confidence.
 
+## 3.5 Early observations from the first live rows (2026-08-06, operator-reported)
+
+Recorded from the operator's first sweep pass — results JSONs not yet
+committed; re-check against `REPORT.md` once the opus row is healed (below).
+Three things the ⏳ sections must not mis-read:
+
+- **Run-to-run variance is real, and it calibrates §9's noise bound.** The
+  fresh sonnet full row scored **91.6** overall against the **94.8** composite
+  baseline — same model, same suite hash, same prices. The gap is dominated by
+  reconciliation **96.7 → 83.3**, the F1-scored category where partial credit
+  turns a couple of flag misses into double-digit category swings. Read:
+  a ≤ ~3-point *overall* delta between rows is noise, exactly as §9 warned,
+  and cross-model reconciliation deltas need a trace read before belief.
+- **Abstention scored exactly 90.0 on all three API rows.** Three models
+  missing the same single point is a question signature, not three
+  coincidences — the shared miss is `hand-abstention-01`, visible in the opus
+  row's failure detail as a genuine `did_not_abstain` (the composite anchor's
+  abstention 100.0 came from the earlier 127c5ad8 re-run). Before reading
+  abstention as a model differentiator, read that one question's traces; if
+  all three models answer it confidently, the trap itself deserves review.
+- **The opus reconciliation 30.0 is outage contamination, not measurement.**
+  Ten reconciliation questions died on a mid-run usage-limit outage
+  (`run_error`) and were frozen in as zeros by resume; see PHASE_LOG and
+  D-032. Heal with `python benchmarks/run_sweep.py --model claude-opus-5
+  --resume ff1213b8-8e3b-4675-9933-cb6dfc6f37e3 --retry-errors`, then take
+  the H1 verdict (cap artifacts vs capability) from the *healed* row — the
+  outage zeros would otherwise masquerade as exactly the depressed workflow
+  score H1 predicts, proving it for the wrong reason.
+
 ## 4. Pre-registered hypotheses (2026-08-06, before any sweep row ran)
 
 - **H1 — Opus reconciliation/multi_step scores will be partly cap artifacts.**

@@ -12,6 +12,12 @@ running and refuses to start when the projection exceeds ``--budget`` without
 (recorded as such) and the run is resumable with ``--resume <eval_run_id>``, which
 skips every question that already has scored rows.
 
+Infrastructure errors are not model failures (D-032): a question whose run died on a
+provider/harness error (``run_error`` / ``harness_error``) is quarantined by the
+summary — visible in an ``errors`` bucket, excluded from category accuracy — and
+``--resume <id> --retry-errors`` supersedes exactly those rows and re-executes the
+questions under the same eval run id, leaving legitimately-scored rows untouched.
+
 Scoring: T1 always (per tiers), T2 walks the in-memory span tree of exactly this
 question's run, T3 judges platform answers when a judge model is configured.
 A question's score is the *minimum* of its tier scores — a right number produced by a
@@ -77,6 +83,14 @@ class BudgetRefused(RuntimeError):
     """Projection exceeds the budget and --yes was not given."""
 
 
+# Failure modes that mean the *infrastructure* died, not that the model got the
+# question wrong: the agent run ended on a ProviderError (``run_error``) or the
+# harness itself raised (``harness_error``). ``run_exhausted`` is deliberately not
+# here — a run stopped by its iteration/budget cap is model behavior under the
+# platform's limits (the sweep's honesty companion, BENCHMARK_NOTES §2). D-032.
+INFRA_FAILURES: tuple[str, ...] = ("run_error", "harness_error")
+
+
 def artifact_dir(config: RunnerConfig, eval_run_id: uuid.UUID) -> Path:
     """Where one eval run's artifacts land: ``out_dir / <eval_run_id>``, with a
     relative ``out_dir`` anchored at the repo root — never the process CWD (D-022:
@@ -102,6 +116,9 @@ class RunnerConfig:
     out_dir: Path = Path("data/evals")
     data_dir: Path = Path("data")
     resume_run_id: uuid.UUID | None = None
+    # With resume: supersede rows whose failure is in INFRA_FAILURES and re-execute
+    # those questions inside the same eval run. Legit-scored rows are never touched.
+    retry_errors: bool = False
     pack_tokens: int = 24_000
     b1_top_k: int = 12
 
@@ -131,6 +148,10 @@ class RunSummary:
     git_sha: str | None
     categories: dict[str, dict[str, Any]]
     t2_violations: int
+    # The quarantine (D-032): infra-errored questions, excluded from `categories`,
+    # tier means, t2_violations, and latency percentiles. They still count in
+    # n_scored (they have rows) and their partial spend stays in total_cost_usd.
+    errors: dict[str, Any]
     n_questions: int
     n_scored: int
     n_skipped_budget: int
@@ -152,6 +173,7 @@ class RunSummary:
             "git_sha": self.git_sha,
             "categories": self.categories,
             "t2_violations": self.t2_violations,
+            "errors": self.errors,
             "n_questions": self.n_questions,
             "n_scored": self.n_scored,
             "n_skipped_budget": self.n_skipped_budget,
@@ -162,6 +184,23 @@ class RunSummary:
             "latency_ms_p50": self.latency_ms_p50,
             "latency_ms_p95": self.latency_ms_p95,
         }
+
+
+def _drop_artifact_lines(artifact: Path, question_ids: set[str]) -> None:
+    """Rewrite ``results.jsonl`` without the superseded questions' lines so the
+    artifact keeps mirroring ``app.eval_results`` after a retry pass — the healed
+    questions re-append as they re-score."""
+    if not artifact.exists():
+        return
+
+    def keep(line: str) -> bool:
+        try:
+            return json.loads(line).get("question_id") not in question_ids
+        except json.JSONDecodeError:
+            return False  # a crash-truncated tail line; the DB is authoritative
+
+    kept = [line for line in artifact.read_text(encoding="utf-8").splitlines() if keep(line)]
+    artifact.write_text("".join(f"{line}\n" for line in kept), encoding="utf-8")
 
 
 def git_sha() -> str | None:
@@ -256,8 +295,14 @@ class EvalRunner:
         return self._providers_for(question)
 
     async def _create_or_resume_run(
-        self, config: RunnerConfig, sha: str | None
-    ) -> tuple[uuid.UUID, set[str]]:
+        self, config: RunnerConfig, sha: str | None, question_ids: set[str]
+    ) -> tuple[uuid.UUID, set[str], set[str]]:
+        """(eval_run_id, questions to skip, questions whose error rows were superseded).
+
+        ``question_ids`` scopes the retry: only errored rows this invocation will
+        actually re-execute are superseded — a ``--categories``/subset-filtered heal
+        must not delete rows it cannot replace.
+        """
         if config.resume_run_id is not None:
             row = await self._pool.fetchrow(
                 "SELECT suite_hash, model FROM app.eval_runs WHERE id = $1",
@@ -275,7 +320,27 @@ class EvalRunner:
                 "SELECT DISTINCT question_id FROM app.eval_results WHERE eval_run_id = $1",
                 config.resume_run_id,
             )
-            return config.resume_run_id, {r["question_id"] for r in done_rows}
+            done = {r["question_id"] for r in done_rows}
+            retried: set[str] = set()
+            if config.retry_errors:
+                errored_rows = await self._pool.fetch(
+                    "SELECT DISTINCT question_id FROM app.eval_results "
+                    "WHERE eval_run_id = $1 AND detail->>'failure' = ANY($2::text[])",
+                    config.resume_run_id,
+                    list(INFRA_FAILURES),
+                )
+                retried = {r["question_id"] for r in errored_rows} & question_ids
+                if retried:
+                    # Supersede, never append: a second row for the same
+                    # (question, tier) would make the summary nondeterministic.
+                    await self._pool.execute(
+                        "DELETE FROM app.eval_results "
+                        "WHERE eval_run_id = $1 AND question_id = ANY($2::text[])",
+                        config.resume_run_id,
+                        sorted(retried),
+                    )
+                done -= retried
+            return config.resume_run_id, done, retried
         run_id = uuid.uuid4()
         await self._pool.execute(
             "INSERT INTO app.eval_runs (id, suite_hash, model, git_sha, summary) "
@@ -286,7 +351,7 @@ class EvalRunner:
             sha,
             canonical_dumps({"track": config.track, "subset": config.subset, "status": "running"}),
         )
-        return run_id, set()
+        return run_id, set(), set()
 
     async def _persist_question(
         self, eval_run_id: uuid.UUID, result: QuestionResult, artifact: Path
@@ -481,6 +546,11 @@ class EvalRunner:
     # ── the run ──────────────────────────────────────────────────────────────
 
     async def run(self, config: RunnerConfig) -> RunSummary:
+        if config.retry_errors and config.resume_run_id is None:
+            raise ValueError(
+                "retry_errors needs a run to heal — pass resume_run_id; a fresh run "
+                "has no errored rows to supersede"
+            )
         questions = config.suite.subset(config.subset)
         if config.categories is not None:
             wanted = set(config.categories)
@@ -512,10 +582,20 @@ class EvalRunner:
 
         await load_answer_key(self._pool, config.suite)
         sha = git_sha()
-        eval_run_id, done = await self._create_or_resume_run(config, sha)
+        eval_run_id, done, retried = await self._create_or_resume_run(
+            config, sha, {q.id for q in questions}
+        )
         out_dir = artifact_dir(config, eval_run_id)
         out_dir.mkdir(parents=True, exist_ok=True)
         artifact = out_dir / "results.jsonl"
+        if retried:
+            print(
+                f"retry-errors: superseding {len(retried)} infra-errored question(s): "
+                + ", ".join(sorted(retried))
+            )
+            _drop_artifact_lines(artifact, retried)
+        elif config.retry_errors:
+            print("retry-errors: no infra-errored rows on this run — nothing to supersede")
 
         index = CorpusIndex.build(anchor_path(config.data_dir)) if config.track == "b0" else None
         pending = [q for q in questions if q.id not in done]
@@ -587,24 +667,32 @@ class EvalRunner:
             eval_run_id,
         )
         by_question: dict[str, dict[str, tuple[float, bool]]] = {}
-        latencies: list[int] = []
+        infra_errored: set[str] = set()
+        latency_by_question: dict[str, int] = {}
         total_cost = Decimal("0")
         seen_cost: set[str] = set()
         for row in rows:
             tiers = by_question.setdefault(row["question_id"], {})
             tiers[row["tier"]] = (float(row["score"] or 0), bool(row["passed"]))
+            detail = json.loads(row["detail"])
+            if detail.get("failure") in INFRA_FAILURES:
+                infra_errored.add(row["question_id"])
             if row["question_id"] not in seen_cost:
                 seen_cost.add(row["question_id"])
-                detail = json.loads(row["detail"])
                 total_cost += Decimal(str(detail.get("cost_usd", "0")))
-                latencies.append(int(detail.get("latency_ms", 0)))
+                latency_by_question[row["question_id"]] = int(detail.get("latency_ms", 0))
 
+        # The quarantine (D-032): an infra-errored question is not a measurement of
+        # the model, so it leaves every accuracy aggregate — category scores, tier
+        # means, T2-violation counts — and the latency percentiles. Its partial
+        # spend stays in total_cost_usd (the money was spent) and it stays in
+        # n_scored (it has rows); the `errors` bucket is the visible account.
         question_by_id = {q.id: q for q in questions}
         categories: dict[str, dict[str, Any]] = {}
         t2_violations = 0
         for question_id, tiers in by_question.items():
             question = question_by_id.get(question_id)
-            if question is None:
+            if question is None or question_id in infra_errored:
                 continue
             bucket = categories.setdefault(
                 question.category,
@@ -620,6 +708,21 @@ class EvalRunner:
                 if tier == "t2" and not passed and config.track == "platform":
                     t2_violations += 1
 
+        # Categories resolve against the whole suite, not the (possibly filtered)
+        # question list: an errored row outside a --categories heal still names
+        # its real category in the account.
+        suite_question_by_id = {q.id: q for q in config.suite.questions}
+        errors_by_category: dict[str, int] = {}
+        for question_id in sorted(infra_errored):
+            suite_question = suite_question_by_id.get(question_id)
+            category = suite_question.category if suite_question is not None else "?"
+            errors_by_category[category] = errors_by_category.get(category, 0) + 1
+        errors: dict[str, Any] = {
+            "n": len(infra_errored),
+            "question_ids": sorted(infra_errored),
+            "by_category": dict(sorted(errors_by_category.items())),
+        }
+
         category_summary = {
             category: {
                 "n": bucket["n"],
@@ -631,7 +734,11 @@ class EvalRunner:
             }
             for category, bucket in sorted(categories.items())
         }
-        latencies.sort()
+        latencies = sorted(
+            latency
+            for question_id, latency in latency_by_question.items()
+            if question_id not in infra_errored
+        )
 
         def pct(p: float) -> int:
             if not latencies:
@@ -652,6 +759,7 @@ class EvalRunner:
             git_sha=sha,
             categories=category_summary,
             t2_violations=t2_violations,
+            errors=errors,
             n_questions=len(questions),
             n_scored=len(by_question),
             n_skipped_budget=len(skipped),
