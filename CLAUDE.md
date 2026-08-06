@@ -59,7 +59,7 @@ before doing anything; this file is the operational summary that governs every s
 - Make targets: `make help` (`up`, `test`, `lint`, `typecheck`, `doctor`, `seed`,
   `emit-period`, `corpus-tokens`, `embed`, `retrieval-probe`, `eval-smoke`,
   `eval-suite`). The eval harness CLI is `python -m evals` (generate / run / smoke /
-  gate / report).
+  gate / compose / report).
 
 ## Commands
 

@@ -890,3 +890,95 @@ in D-021.
   exceeds max_iterations=24`; multi_step-003 ran cleanly through
   `compute_allocations` and ended on a single mid-text `max_tokens` cut with
   no tool_call after it. Diagnosis confirmed; investigation closed.
+
+---
+
+## Inter-phase (pre-Phase 6) — eval detour close-out: multi_step green (run c804b338), composite baseline protocol (D-023) · 2026-08-06
+
+Closes the diagnosis arc opened by run 2b9f39fb. Four runs, four harness bugs,
+zero agent hallucinations found anywhere in the adjudicated traces.
+
+**Final re-run (c804b338, `--categories multi_step`, git `6567d9ad9cba`) — the
+fixes hold.** All six Reconciler workflows ran ingest → match → scan →
+allocations → `submit_batch` to completion, submits landing normally — no
+`run_exhausted`, no truncation retry loops. Operator-pasted result:
+
+- platform/claude-sonnet-5 (full) · suite `6eef41c6706f309a` · run
+  `c804b338-a874-42fe-853e-f855281be5e0`
+- 12/12 questions scored · spend $2.755974 (budget $14) · latency p50 110729ms
+  / p95 127570ms
+- T2 violations: 1 · judge: claude-sonnet-5 (rubric ffe8c9753172)
+
+| category | n | score | T1 | T2 | T3 |
+|---|---:|---:|---:|---:|---:|
+| multi_step | 12 | 72.8 | 100.0 | 98.3 | 72.8 |
+| **overall** | 12 | **72.8** |  |  |  |
+
+artifacts → `data/evals/c804b338-a874-42fe-853e-f855281be5e0` (operator host)
+
+**The arc, in one place** (full write-ups in the two entries above and
+D-017..D-022):
+
+- **2b9f39fb** — first full live run: 133/133, overall 84.9, $16.74 metered vs
+  the $15 budget. Bug 1: **dated pricing** (D-017 — the meter billed sticker
+  $3/$15 while the API charged intro $2/$10; every metered number 1.5× real).
+  Bug 2: **budget gate blind to in-flight spend** (D-019 — landed-cost-only
+  reads meant the hard stop could never fire; it now reads committed spend =
+  landed + per-question reservations). Alongside: D-018, after adjudication
+  showed all 9 abstention failures were harness artifacts — every failing
+  reply carried a correct typed `ABSTAIN:` line the finalizer refused on
+  placement.
+- **127c5ad8** — targeted re-run (abstention + multi_step, correct prices):
+  abstention 100.0, so D-018 holds; all six reconciler questions exhausted at
+  the now-correct $1.00 cap. Bug 3: **per-run budgets were guesses** (D-020 —
+  budgets are sized empirically; Reconciler floor $2.50).
+- **ddb797dc** — multi_step re-run: 5/6 exhausted *under* the raised cap on
+  iteration burn. Bug 4: **truncation contract + output sizing** (D-021 — the
+  runtime acted on `max_tokens`-truncated replies, so cut `submit_batch`
+  calls partial-parsed into `invalid_tool_args` retry loops, and a
+  full-period allocations payload cannot fit a 4096-token ceiling; truncated
+  replies are now never acted on and the Reconciler ceiling is 16384).
+  D-022 path anchoring was found and fixed en route; the span-tree pull
+  matched the pre-registered signature exactly.
+- **c804b338** — green (table above).
+
+**What the arc did not find: agent failures.** Every diagnosed zero traced to
+the harness (meter, budget gate, caps, truncation handling); adjudicated agent
+behavior was correct throughout, including all abstentions. What remains in
+multi_step is T3 prose quality — 72.8 from judge marks of the
+overreach/hedging kind first seen on the 2b9f39fb counsel answers — now the
+category's floor with T1/T2 at 100.0/98.3. That is future prompt-tuning, not a
+defect; noted, not actioned (agent prompts stayed untouched all arc, so
+`suite_hash` comparability holds). Standing sharp edge, also untouched: the
+gate fails any run with T2 violations > 0 by design, and c804b338 carries one
+(98.3) — a future *gated* run needs a violation-free pass, while the baseline
+below records scores as measured.
+
+**Baseline: composite protocol shipped (D-023).** The gate's staleness
+identity is the `suite_hash`, and all four runs answered committed suite
+`6eef41c6706f309a` — so the latest valid measurement of every category already
+exists: eight categories from 2b9f39fb (adjudicated clean; harness-only fixes
+since), abstention from 127c5ad8, multi_step from c804b338. Rather than
+re-buying those numbers with a ~$11 fresh full run, `python -m evals compose`
+(new, test-first, 13 tests including composed-entry-feeds-the-gate) merges run
+summaries into one gate-ready summary under hard refusal checks — one
+(model, track, subset, suite_hash) shape, committed-suite hash match, full
+per-category counts, exact coverage, later-runs-override-per-whole-category,
+per-category provenance folded into the entry note.
+
+**Left open — one keyless $0 command on the operator host** (this session ran
+in a remote container: no run artifacts, no API key; live spend authorized up
+to $15 was not needed):
+
+    python -m evals compose \
+      --summary data/evals/2b9f39fb-*/summary.json \
+                data/evals/127c5ad8-*/summary.json \
+                data/evals/c804b338-a874-42fe-853e-f855281be5e0/summary.json \
+      --write-baseline --note "first live baseline (post-diagnosis composite)"
+
+then commit `evals/results/baseline.json`. Order is precedence (oldest first);
+ddb797dc is deliberately excluded (its multi_step was invalidated by D-021).
+If an older run's `summary.json` moved (pre-D-022 CWD nesting), recover it via
+`SELECT summary FROM app.eval_runs WHERE id = '<run id>'`. Separately and
+unchanged by this close-out: the `(claude-sonnet-5, platform, gate)` CI entry
+still bootstrap-passes until a ~$5 `--gate-subset` run is recorded.
