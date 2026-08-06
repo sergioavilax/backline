@@ -46,6 +46,7 @@ AGENT_NAMES = ("counsel", "analyst", "reconciler")
 
 _CITATION = re.compile(r"FBR-[CA]-\d{5}\s+§[A-Z0-9]+")
 _ABSTAIN = re.compile(r"^\s*ABSTAIN:\s*(?P<reason>.*)$")
+_ANSWER = re.compile(r"^\s*ANSWER:\s*(?P<payload>.*)$")
 _BATCH = re.compile(r"^\s*BATCH:\s*(?P<batch>none|\d+)\s*$", re.MULTILINE | re.IGNORECASE)
 _FLAGS = re.compile(r"^\s*FLAGS:\s*(?P<summary>.+?)\s*$", re.MULTILINE)
 
@@ -67,8 +68,26 @@ def extract_citations(text: str) -> list[Citation]:
 
 
 def _abstained(text: str) -> bool:
-    first_line = text.strip().splitlines()[0] if text.strip() else ""
-    return _ABSTAIN.match(first_line) is not None
+    """Typed abstention under the output contracts (D-018).
+
+    The prompts ask for a first-line ``ABSTAIN:``, but output contracts
+    simultaneously demand the reply *end* with an ``ANSWER:`` line — and every
+    failing abstention in run 2b9f39fb resolved that tension one of two ways:
+    the ``ABSTAIN:`` line displaced to just above a final placeholder ``ANSWER:``
+    line (``ANSWER: N/A``, ``ANSWER: $0``...), or the abstention jammed into the
+    line itself (``ANSWER: ABSTAIN: no such artist``). All of those are the typed
+    protocol; an ``ABSTAIN:`` buried mid-reasoning still is not.
+    """
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    final_answer = _ANSWER.match(lines[-1])
+    if final_answer is not None and final_answer.group("payload").startswith("ABSTAIN"):
+        return True
+    candidates = [lines[0], lines[-1]]
+    if final_answer is not None and len(lines) >= 2:
+        candidates.append(lines[-2])
+    return any(_ABSTAIN.match(line) is not None for line in candidates)
 
 
 def finalize_cited(text: str) -> FinalAnswer:

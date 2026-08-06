@@ -82,6 +82,11 @@ async def _run_async(args: argparse.Namespace, suite: Suite) -> int:
             model=args.model,
             track=args.track,
             subset="gate" if args.gate_subset else None,
+            categories=(
+                tuple(part.strip() for part in args.categories.split(",") if part.strip())
+                if args.categories
+                else None
+            ),
             budget_usd=Decimal(args.budget),
             assume_yes=args.yes,
             judge_model=(
@@ -121,6 +126,12 @@ def _cmd_run(argv: list[str]) -> int:
     parser.add_argument("--track", choices=["platform", "b0", "b1"], default="platform")
     parser.add_argument(
         "--gate-subset", action="store_true", help="run only the budget-capped CI regression subset"
+    )
+    parser.add_argument(
+        "--categories",
+        default=None,
+        help="comma-separated category filter for targeted re-runs "
+        "(e.g. abstention,multi_step); a filtered summary is not gate-comparable",
     )
     parser.add_argument("--budget", default=None, help="USD hard cap (default: EVAL_BUDGET_USD)")
     parser.add_argument(

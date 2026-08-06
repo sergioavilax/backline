@@ -769,3 +769,74 @@ enable + image build (dev machine, procedure staged in pyproject + Dockerfile).
 results table belongs in this log, and its `--write-baseline` output (live
 `claude-sonnet-5` entries alongside the committed mock entries) should land in
 the same commit; live judge (T3) behavior rides with it.
+
+---
+
+## Inter-phase (pre-Phase 6) — live eval run 2b9f39fb diagnosis + harness fixes · 2026-08-06
+
+First full live run (`claude-sonnet-5`, suite `6eef41c6706f309a`, 133/133 scored,
+$16.7358 metered vs $15 budget, overall 84.9) diagnosed. Three investigations;
+harness fixes only — agent prompts and the committed suite untouched, so results
+stay comparable under the same `suite_hash`.
+
+**Shipped**
+
+- **Pricing (bug 2a)**: `models.yaml` metered Sonnet 5 at the $3/$15 sticker while
+  the API bills intro $2/$10 through 2026-08-31 — meter overstated spend exactly
+  1.5× ($16.74 vs ~$11.16 billed). Registry now supports dated price schedules
+  resolved per load date with the applied tier recorded and printed; tests pin
+  both sides of the Sept 1 boundary (D-017). Side effect worth naming: the same
+  1.5× inflated the per-iteration `RUN_BUDGET_USD` guardrail checks, squeezing
+  the effective per-run cap to ~⅔ real-money intent — Reconciler multi_step runs
+  ($1.00 cap ⇒ ~$0.67 effective) were the most exposed.
+- **Budget hard stop (bug 2b)**: the gate read only landed cost, updated post-
+  completion; with concurrency 4 and p50 15s / p95 115s, in-flight multi_step
+  costs were invisible and all 133 questions started. Gate now reads committed
+  spend (landed + per-question projected reservations), announces the stop, and
+  warns on overshoot; regression test proves the stop trips at concurrency 4
+  with costs in flight, and was verified failing pre-fix (D-019).
+- **Projection (bug 2c)**: $6.86 reproduced exactly from the old `_PROJECTION`
+  constants — single-round-trip token guesses that ignore per-iteration context
+  resend. Recalibrated to loop totals (~2.4×, provisional pending per-agent
+  means from the run artifacts); projection refactored to a per-question unit
+  shared with the reservations (D-019).
+- **Abstention protocol (investigation 1)**: code-verified conflict — abstention
+  prompts demand a closing `ANSWER:` line (the D-015 trap) while the finalizer
+  accepted `ABSTAIN:` on the first line only; Phase 4's live smoke prompt had no
+  format suffix, which is why it passed. Finalizer now accepts the typed
+  abstention opening *or* closing the reply, mid-text still refused (D-018).
+
+**Trace adjudication (operator-pasted `results.jsonl` excerpts, same session)**
+
+- **Abstention: 9/9 failures were harness artifacts; zero hallucinations.**
+  Every failing reply carried an explicit, correct typed `ABSTAIN:` line —
+  seven displaced to just above a placeholder final `ANSWER:` line
+  (`N/A%`, `$0`, `NO`, `0`, `N/A`), two jammed into the answer line itself
+  (`ANSWER: ABSTAIN: …`); the one pass led with it. The finalizer now accepts
+  all observed shapes (mid-reasoning mentions still refused), pinned by a test
+  carrying the verbatim trace patterns. Agent behavior needs no change.
+- **multi_step T1 split: 6/6 failures are `run_exhausted`, zero extraction
+  failures, zero wrong sets.** All six reconciler workflow questions died at
+  the per-run budget guardrail ($1.03–1.10 metered vs the $1.00 cap ⇒
+  ~$0.69–0.73 actually billed vs the cap's $1.00 intent — the pricing bug
+  shrank effective headroom 1.5×), each after completing scan + allocations
+  but before submit (T2 `single_batch: 0`), leaving an empty answer for T1 and
+  the judge. All six counsel spot-quotes passed T1+T2 with delta 0.000000; the
+  category's remaining deductions are judge marks on two counsel answers'
+  overreach/hedging (multi_step-009 at 0.53 failing, -007 at 0.60 passing) —
+  genuine prose-quality findings, not harness bugs. One stray T2 note:
+  multi_step-003 probed `information_schema` (correctly denied → `sql_clean`
+  fail).
+- **Enforcement, empirically closed**: the seven long reconciler runs ($7.12
+  combined) landed last; cumulative landed spend first exceeded $15 at result
+  132/133 — the landed-only gate could never have fired. Reservations fix this
+  class.
+- **`_PROJECTION` finalized** from judge-subtracted per-agent means (counsel
+  14k/1.8k, analyst 4.5k/750, reconciler 87k/12.7k): suite total $16.90 vs
+  $16.74 metered; at intro prices $11.27 vs ~$11.16 billed. Reconciler mean is
+  cap-censored (6/22 runs capped) and floors reconciler-heavy projections.
+- reconciliation shows no exhaustion signature (max $0.344 ≪ cap) — its single
+  T1 miss is a genuine flag-set miss; no harness action.
+- No baseline written; no live re-run executed from this session (per operator
+  instruction). Re-run recommendation recorded in the session report:
+  `--categories abstention,multi_step`.

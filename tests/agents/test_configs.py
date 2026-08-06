@@ -111,9 +111,69 @@ def test_finalize_cited_abstention() -> None:
     plain = finalize_cited("The rate is 30% (FBR-C-00501 §3).")
     assert plain.abstained is False
     assert [c.ref for c in plain.citations] == ["FBR-C-00501 §3"]
-    # ABSTAIN on a later line is not an abstention marker — first line only.
-    mid = finalize_cited("Here is the answer.\nABSTAIN: not really; this is line two.")
-    assert mid.abstained is False
+
+
+def test_finalize_cited_abstention_positions() -> None:
+    """D-018: the typed abstention may open or close the reply — output contracts
+    that demand a final ANSWER-shaped line pull models toward closing with it —
+    but an ABSTAIN buried mid-reasoning is still not the protocol."""
+    closing = finalize_cited(
+        "I searched the roster and the catalog; no artist matches.\n\n"
+        "ABSTAIN: no artist named 'Vera Nyx' on the roster."
+    )
+    assert closing.abstained is True
+
+    trailing_blank = finalize_cited("ABSTAIN: unknown clause.\n\n")
+    assert trailing_blank.abstained is True
+
+    buried = finalize_cited(
+        "If I could not verify this I would reply ABSTAIN: unknown.\n"
+        "The rate is 30% (FBR-C-00501 §3).\n"
+        "ANSWER: 30%"
+    )
+    assert buried.abstained is False
+
+    empty = finalize_cited("")
+    assert empty.abstained is False
+
+
+def test_finalize_cited_abstention_run_2b9f39fb_shapes() -> None:
+    """The shapes the first live eval actually produced (9/9 failing abstentions):
+    the ABSTAIN line displaced to second-to-last by the contract's mandatory final
+    ANSWER placeholder line, or jammed into the ANSWER line's payload. Every one
+    is a typed abstention; none invented a value."""
+    displaced = finalize_cited(
+        'No artist named "Vera Nyx" exists on the roster — the search tool '
+        "returned no matches.\n\n"
+        'ABSTAIN: No artist named "Vera Nyx" found on the roster.\n\n'
+        "ANSWER: N/A%"
+    )
+    assert displaced.abstained is True
+
+    displaced_money = finalize_cited(
+        'No results correspond to an artist named "Moss Delaney".\n\n'
+        'ABSTAIN: No artist named "Moss Delaney" found on the roster.\n\n'
+        "ANSWER: $0"
+    )
+    assert displaced_money.abstained is True
+
+    displaced_after_sql = finalize_cited(
+        'No artist named "Halcyon Drift" exists in the catalog.\n\n'
+        "```sql\nSELECT count(*) FROM label.tracks;\n```\n\n"
+        'ABSTAIN: No artist named "Halcyon Drift" found in label.artists.\n\n'
+        "ANSWER: 0"
+    )
+    assert displaced_after_sql.abstained is True
+
+    jammed = finalize_cited(
+        "FBR-C-00502 has no §9 — the contract only contains §1 through §8.\n\n"
+        "ANSWER: ABSTAIN: FBR-C-00502 has no §9 (clauses run §1 through §8)."
+    )
+    assert jammed.abstained is True
+
+    # A real answer above a final ANSWER line stays a real answer.
+    answered = finalize_cited("The rate is 22% under FBR-C-00503 §3.\n\nANSWER: 22%")
+    assert answered.abstained is False
 
 
 def test_finalize_reconciler_parses_wrap_up() -> None:

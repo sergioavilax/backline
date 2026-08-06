@@ -5,6 +5,7 @@ artifacts, budget refusal + hard-stop + resume, and the three tracks (platform /
 b1) through one scoring path.
 """
 
+import asyncio
 import json
 import uuid
 from decimal import Decimal
@@ -243,6 +244,55 @@ async def test_budget_refusal_without_yes(pool: asyncpg.Pool, tmp_path: Path) ->
     assert after == before
 
 
+class _SlowProvider:
+    """Wraps a MockProvider, holding every completion open — the question's cost
+    stays in flight, invisible to any gate that reads only landed spend."""
+
+    name = "mock"
+
+    def __init__(self, inner: MockProvider, delay_s: float) -> None:
+        self._inner = inner
+        self._delay_s = delay_s
+
+    async def complete(self, req: Any) -> Any:
+        await asyncio.sleep(self._delay_s)
+        return await self._inner.complete(req)
+
+
+async def test_budget_hard_stop_trips_while_costs_are_in_flight(
+    pool: asyncpg.Pool, tmp_path: Path
+) -> None:
+    """Regression for run 2b9f39fb: with concurrency > 1 the gate must count
+    in-flight reservations. Landed cost alone let all 133 questions start — slow
+    expensive questions (p95 115s) held their cost invisibly while cheap ones
+    (p50 15s) sailed through the landed-only check, so the hard stop never fired."""
+    suite, scripts = await _mini_suite(pool)
+    slow_id = suite.questions[0].id
+
+    def factory(question: Question) -> dict[str, Any]:
+        provider = MockProvider(scripts[question.id])
+        if question.id == slow_id:
+            return {"mock": _SlowProvider(provider, delay_s=0.25)}
+        return {"mock": provider}
+
+    runner = EvalRunner(
+        pool=pool,
+        registry=ModelRegistry.load(),
+        embedder=HashingEmbedder(),
+        reranker=LexicalReranker(),
+        provider_factory=factory,
+    )
+    # The budget is below a single counsel-question reservation: the first question
+    # may start (some budget remains — the pre-existing semantics), and everything
+    # else must skip while its cost is still in flight, at any concurrency.
+    summary = await runner.run(
+        _config(suite, tmp_path, budget_usd=Decimal("0.02"), assume_yes=True, concurrency=4)
+    )
+    assert summary.budget_exhausted
+    assert summary.n_scored == 1
+    assert summary.n_skipped_budget == len(suite.questions) - 1
+
+
 async def test_budget_hard_stop_and_resume(pool: asyncpg.Pool, tmp_path: Path) -> None:
     suite, scripts = await _mini_suite(pool)
     runner = _runner(pool, scripts)
@@ -276,6 +326,21 @@ async def test_budget_hard_stop_and_resume(pool: asyncpg.Pool, tmp_path: Path) -
         first.eval_run_id,
     )
     assert all(r["n"] == 1 for r in rows)
+
+
+async def test_categories_filter_runs_targeted_subset(pool: asyncpg.Pool, tmp_path: Path) -> None:
+    """`--categories` scopes a run to named categories — targeted re-runs after a
+    harness fix are priced per question, not per suite."""
+    suite, scripts = await _mini_suite(pool)
+    runner = _runner(pool, scripts)
+    summary = await runner.run(_config(suite, tmp_path, categories=("abstention",)))
+    assert summary.n_questions == 1
+    assert summary.n_scored == 1
+    assert set(summary.categories) == {"abstention"}
+    assert summary.categories["abstention"]["score"] == 100.0
+
+    with pytest.raises(ValueError, match="unknown categories"):
+        await runner.run(_config(suite, tmp_path, categories=("nope",)))
 
 
 async def test_resume_mismatch_rejected(pool: asyncpg.Pool, tmp_path: Path) -> None:
