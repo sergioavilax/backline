@@ -1093,3 +1093,71 @@ mode (D-024).
 
 **Eval-suite impact**: none — agents, prompts, tools, scorers untouched;
 `suite_hash 6eef41c6706f309a` and the composite baseline remain valid.
+
+## Phase 6 follow-up — verification findings: review-queue payload drift, router misroute, compose fix · 2026-08-06
+
+Operator verification of Phase 6 against live agents and real data (staging
+batches submitted by eval run c804b338's six multi_step reconcilers) surfaced
+two defects and one packaging gap. Fixed here. Phase 7 not started.
+
+**1. Review Queue crashed on live-agent batches** (`Uncaught TypeError:
+e.trim is not a function` rendering /review). Root cause: synthetic-vs-real
+payload drift. The demo reconciler (D-024) writes allocation `line_detail`
+and flag payloads with money as decimal *strings* (`str(Decimal)`), and the
+Playwright smoke approves exactly that batch — but `submit_batch` accepts
+`dict[str, Any]` verbatim, and live agents write JSON *numbers*, omit or
+null keys, spell line ids as numeric strings, and use `line_ids` lists plus
+free-form measurement keys. `canonical_dumps` stringifies `Decimal` objects,
+not agent-authored JSON numbers, so those reached the UI, where `money()`
+assumed a `.trim()`-able string; the queue auto-loads the first proposed
+batch's detail, so the whole surface white-screened. Fixes:
+
+- `ui/lib/format.ts`: `money()`/`cost()` accept `unknown` — numbers
+  stringify (display only, never arithmetic; invariant 1 holds), null/absent
+  → "—", non-decimal input renders as-is instead of throwing. `Money` no
+  longer calls `.startsWith` on raw input.
+- `ui/components/review/ReviewScreen.tsx`: flag cards render every payload
+  shape — `line_id` as int or numeric string, `line_ids` lists
+  ("staged:88101 +1"), object-shaped `detail`, and previously-invisible
+  agent-written measurement keys as a `k=v` mono line; evidence cells are
+  null-safe.
+- `backline/api/routes/review.py`: `_flag_evidence` resolves numeric-string
+  ids and scalar `line_ids`, and no longer 500s on a non-list `line_ids`
+  (subscripting the old `payload.get("line_ids", [])[:5]` raised on an int).
+- Tests, so the drift can't recur silently: `ui/tests/review-real-shape.spec.ts`
+  (Playwright) serves a live-shaped `BatchDetail` fixture via route
+  interception — numbers, nulls, odd payloads, nullable fields — and pins
+  zero page errors plus rendered content;
+  `test_review_serves_live_agent_shaped_batch` (`tests/api/`) inserts the
+  same shapes into staging and pins 200 + evidence resolution for every id
+  spelling. D-027 records why rendering robustness (not write/read-time
+  coercion) is the fix.
+
+**2. Router misroute: terms language read as analytics.** "What's Beatriz
+Romano's sync rate?" routed to analyst at 0.75 (dispatch threshold 0.6); the
+Analyst handled it gracefully (disclaimed, computed a labeled revenue-share
+proxy, redirected) but "rate" is contract-terms language and the route was
+wrong. `prompts/router.md` gains a "terms language vs revenue language"
+block: rate/split/percentage/"what does the contract say" → counsel even
+when the question sounds numeric; earnings/revenue/"how much did X make" →
+analyst; "royalty rate" vs "royalty accrued" as the disambiguating pair.
+Examples use `<artist>` placeholders — a real roster name in the system
+prompt could bias `artists` extraction. Agent prompts untouched.
+
+- **Router prompt hash: `6741134aa6f9` → `b15eb271376d`** — subsequent runs
+  and eval results pin the new hash. `suite_hash 6eef41c6706f309a` covers
+  the question set only, so the composite baseline (D-023) stays valid.
+- Tests: the live router cases gain the misrouted phrasing and its
+  revenue-language twin (`tests/agents/test_live_agents.py`); the keyless
+  prompt test pins the examples' presence (`tests/agents/test_prompts.py`).
+
+**Deviations & notes**
+
+- The Phase 6 log asked the operator to run `make up` once to close the
+  compose loop the build sandbox couldn't. Done — and the cold
+  `docker compose up` caught `docker/api.Dockerfile` missing
+  `COPY config ./config`: the API crash-looped loading `config/models.yaml`
+  at startup. Native runs and CI never hit it (they run from the repo
+  checkout); the image build was the one uncovered path. Fixed and pushed
+  directly to main as `0d0b386` — outside the one-phase-one-PR flow,
+  recorded here as the deviation.
