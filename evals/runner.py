@@ -51,15 +51,24 @@ from evals.types import Question, Suite, Track, load_answer_key
 
 ProviderFactory = Callable[[Question], Mapping[str, Provider]]
 
-# Rough per-question token estimates for the §5.4 pre-run projection: the guard needs
-# an order-of-magnitude spend forecast, not an invoice.
+# Per-question token estimates for the §5.4 pre-run projection and the in-flight
+# budget reservations. These are whole-loop totals, not one request: an agent resends
+# its entire growing context every iteration, so input ≈ Σ per-iteration context over
+# 3-5 iterations (counsel/analyst) or 10-24 (reconciler workflows) — the original
+# single-round-trip guesses (counsel 9000/1200, analyst 5000/900, reconciler
+# 16000/2500, judge 2500/400) projected $6.86 for the full suite where run 2b9f39fb's
+# meter recorded $16.74 at identical per-token prices, a 2.4x undershoot. The guard
+# needs an order-of-magnitude forecast, not an invoice — but the magnitude must be
+# the loop's, and it feeds the hard stop's reservations, so low biases the gate open.
+# The per-agent split below is provisional (aggregate-calibrated); refine it from the
+# run's per-question cost_usd by agent when extracting artifacts (D-019).
 _PROJECTION: dict[str, tuple[int, int]] = {
-    "counsel": (9_000, 1_200),
-    "analyst": (5_000, 900),
-    "reconciler": (16_000, 2_500),
+    "counsel": (22_000, 2_800),
+    "analyst": (11_000, 1_800),
+    "reconciler": (48_000, 7_000),
     "b0": (0, 800),  # + pack budget, added at projection time
     "b1": (4_500, 800),
-    "judge": (2_500, 400),
+    "judge": (3_000, 450),
 }
 
 
@@ -73,6 +82,10 @@ class RunnerConfig:
     model: str
     track: Track = "platform"
     subset: Literal["gate", "smoke"] | None = None
+    # Restrict the run to these categories (post-subset) — targeted re-runs after a
+    # harness fix, priced per question instead of per suite. A filtered summary is
+    # not gate-comparable (missing categories read as regressions); don't --gate it.
+    categories: tuple[str, ...] | None = None
     budget_usd: Decimal = Decimal("5.00")
     assume_yes: bool = False
     judge_model: str | None = None  # platform track only; None = skip T3
@@ -160,26 +173,39 @@ def git_sha() -> str | None:
     return out.stdout.strip() or None
 
 
+def project_question_cost(
+    question: Question, config: RunnerConfig, registry: ModelRegistry
+) -> Decimal:
+    """Projected spend for one question (agent loop + judge when T3 applies).
+
+    Doubles as the reservation the runner holds while the question is in flight, so
+    the budget gate sees committed spend — not just costs that have already landed.
+    """
+    info = registry.get(config.model)
+    per_mtok = Decimal(1_000_000)
+    if config.track == "platform":
+        tokens_in, tokens_out = _PROJECTION[question.agent]
+    else:
+        tokens_in, tokens_out = _PROJECTION[config.track]
+        if config.track == "b0":
+            tokens_in += config.pack_tokens
+    total = (info.usd_per_mtok_in * tokens_in + info.usd_per_mtok_out * tokens_out) / per_mtok
+    if config.track == "platform" and config.judge_model is not None and "t3" in question.tiers:
+        judge_info = registry.get(config.judge_model)
+        j_in, j_out = _PROJECTION["judge"]
+        total += (
+            judge_info.usd_per_mtok_in * j_in + judge_info.usd_per_mtok_out * j_out
+        ) / per_mtok
+    return total
+
+
 def project_cost(
     questions: Sequence[Question], config: RunnerConfig, registry: ModelRegistry
 ) -> Decimal:
-    info = registry.get(config.model)
-    total = Decimal("0")
-    per_mtok = Decimal(1_000_000)
-    for question in questions:
-        if config.track == "platform":
-            tokens_in, tokens_out = _PROJECTION[question.agent]
-        else:
-            tokens_in, tokens_out = _PROJECTION[config.track]
-            if config.track == "b0":
-                tokens_in += config.pack_tokens
-        total += (info.usd_per_mtok_in * tokens_in + info.usd_per_mtok_out * tokens_out) / per_mtok
-        if config.track == "platform" and config.judge_model is not None and "t3" in question.tiers:
-            judge_info = registry.get(config.judge_model)
-            j_in, j_out = _PROJECTION["judge"]
-            total += (
-                judge_info.usd_per_mtok_in * j_in + judge_info.usd_per_mtok_out * j_out
-            ) / per_mtok
+    total = sum(
+        (project_question_cost(question, config, registry) for question in questions),
+        Decimal("0"),
+    )
     return total.quantize(Decimal("0.01"))
 
 
@@ -448,14 +474,27 @@ class EvalRunner:
 
     async def run(self, config: RunnerConfig) -> RunSummary:
         questions = config.suite.subset(config.subset)
+        if config.categories is not None:
+            wanted = set(config.categories)
+            unknown = wanted - {q.category for q in config.suite.questions}
+            if unknown:
+                raise ValueError(f"unknown categories: {sorted(unknown)}")
+            questions = [q for q in questions if q.category in wanted]
+            if not questions:
+                raise ValueError(f"no questions in categories {sorted(wanted)} for this subset")
         if config.track != "platform":
             # T3 is platform-only; baselines answer every question all the same.
             config = dataclasses.replace(config, judge_model=None)
 
         projection = project_cost(questions, config, self._registry)
+        info = self._registry.get(config.model)
+        price = f"${info.usd_per_mtok_in}/${info.usd_per_mtok_out} per Mtok"
+        if info.price_note:
+            price = f"{price} — {info.price_note}"
         print(
             f"eval run: {len(questions)} questions · track={config.track} · "
-            f"model={config.model} · projected ≈ ${projection} · budget ${config.budget_usd}"
+            f"model={config.model} @ {price} · "
+            f"projected ≈ ${projection} · budget ${config.budget_usd}"
         )
         if projection > config.budget_usd and not config.assume_yes:
             raise BudgetRefused(
@@ -475,22 +514,46 @@ class EvalRunner:
 
         spent_lock = asyncio.Lock()
         spent = Decimal("0")
+        reserved = Decimal("0")
         skipped: list[str] = []
+        stop_announced = False
         semaphore = asyncio.Semaphore(config.concurrency)
 
         async def one(question: Question) -> None:
-            nonlocal spent
+            nonlocal spent, reserved, stop_announced
+            projected = project_question_cost(question, config, self._registry)
             async with semaphore:
                 async with spent_lock:
-                    if spent >= config.budget_usd:
+                    # The gate reads committed spend: landed cost + a projected
+                    # reservation per in-flight question. Landed cost alone let run
+                    # 2b9f39fb finish all 133 questions past its cap — slow expensive
+                    # questions held their cost invisibly in flight (p95 115s vs p50
+                    # 15s) while cheap ones sailed through the check.
+                    if spent + reserved >= config.budget_usd:
                         skipped.append(question.id)
+                        if not stop_announced:
+                            stop_announced = True
+                            print(
+                                f"budget hard stop: ${spent} landed + ${reserved} "
+                                f"reserved for in-flight questions ≥ "
+                                f"${config.budget_usd} — skipping the rest "
+                                f"(resumable with --resume)"
+                            )
                         return
+                    reserved += projected
                 result = await self._score_question(config, question, index)
                 async with spent_lock:
+                    reserved -= projected
                     spent += result.cost_usd
                 await self._persist_question(eval_run_id, result, artifact)
 
         await asyncio.gather(*(one(question) for question in pending))
+        if spent > config.budget_usd:
+            print(
+                f"warning: metered spend ${spent} overshot the ${config.budget_usd} "
+                f"budget — in-flight questions at the stop boundary cost more than "
+                f"their reservations"
+            )
 
         summary = await self._summarize(
             config, eval_run_id, sha, questions, skipped, spent, out_dir
