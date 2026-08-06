@@ -137,10 +137,13 @@ def cmd_emit_period(args: argparse.Namespace) -> int:
 
     n_files = _write_inbox_files(built, lines, data_dir, [idx])
     inserted = asyncio.run(_insert_received_statements(settings.database_url, statements))
+    fx_inserted = asyncio.run(
+        _insert_fx_rows(settings.database_url, period, config.fx_rates[period])
+    )
     print(
         f"emit-period: {period} — {len(lines):,} lines across {n_files} drops in "
-        f"data/inbox; {inserted} statement rows recorded (status=received). "
-        f"The Reconciler takes it from here."
+        f"data/inbox; {inserted} statement rows recorded (status=received), "
+        f"{fx_inserted} FX rows added. The Reconciler takes it from here."
     )
     return 0
 
@@ -186,6 +189,29 @@ def _inject_emitted_anomalies(
             gross = money6(src.gross_amount * Decimal(units) / Decimal(src.units))
             out.append(replace(src, id=inject_id(), units=units, gross_amount=gross))
     return out
+
+
+async def _insert_fx_rows(database_url: str, period: str, rates: dict[str, Decimal]) -> int:
+    """The emitted month's FX rows (from world.yaml), so the runtime calculator can
+    FX-normalize staged lines for that period. Idempotent; seeded periods untouched."""
+    import asyncpg
+
+    conn = await asyncpg.connect(database_url)
+    inserted = 0
+    try:
+        for currency in sorted(rates):
+            result = await conn.execute(
+                "INSERT INTO label.fx_rates (period, currency, usd_rate) "
+                "VALUES ($1, $2, $3) ON CONFLICT (period, currency) DO NOTHING",
+                period,
+                currency,
+                rates[currency],
+            )
+            if result.endswith("1"):
+                inserted += 1
+    finally:
+        await conn.close()
+    return inserted
 
 
 async def _insert_received_statements(database_url: str, statements: list[Statement]) -> int:

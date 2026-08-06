@@ -260,3 +260,146 @@ tests/providers/test_live_anthropic.py::test_live_tool_use_round_trip PASSED    
   notes tools.
 
 **Deferred**: nothing from the Phase 2 scope.
+
+---
+
+## Phase 3 — Tools + RAG (2026-08-06)
+
+**Shipped**
+
+- `backline/tools/sqlpolicy.py` — the parser-level SQL policy (invariant 3's
+  enforcement point): sqlglot parse → exactly one SELECT/set-op, default-deny schema
+  allowlist `{label, staging}` (truth/app/rag/pg_catalog dead by construction, with the
+  named canary test pinning `truth`/`app` out of `ALLOWED_SCHEMAS`), every table
+  schema-qualified (CTE names resolved), no DML/DDL/multi-statement/`SELECT INTO`/
+  `FOR UPDATE`, side-effectful-function denylist (pg_sleep/pg_read_*/dblink/sequence
+  ops/...), LIMIT 200 injected when absent and capped when larger. Doubles as a
+  guardrails `ToolCheck`, so a denied query is a `guardrail` span, not a log line.
+- `backline/tools/sqltool.py` — `sql_query`: policy → `EXPLAIN (FORMAT JSON)` cost
+  ceiling (`SQL_COST_CEILING`, rejects pathological joins pre-execution) → READ ONLY
+  transaction + server-side statement timeout → aligned text table with row count and
+  disclosed LIMIT rewrites. Decimal-exact rendering.
+- `migrations/0003_rag_and_ingestion.sql` — `rag.contract_chunks` (clause chunks,
+  weighted generated tsvector, `vector(384)`, per-row `embedding_model` +
+  `content_hash`; ivfflat deliberately left to the embed job per §9) and
+  `staging.ingested_lines` (the agent ingestion target, D-010).
+- `backline/rag/` — the §4.4 pipeline (D-002):
+  - `chunker.py` — clause-aware chunks from the renderer's deterministic `.txt`
+    sidecars (chunks *are* clauses; §-heading split; oversize clauses part-split on
+    paragraphs — the seeded corpus needs none). Injection canary chunks verbatim
+    (FBR-C-00670 §7), pinned by test.
+  - `embedder.py` / `reranker.py` — bge-small-en-v1.5 + ms-marco cross-encoder via the
+    optional `embed` extra, with deterministic offline twins (`hash-bow-384-v1`
+    feature-hashed BoW embedder; `lexical-overlap-v1` reranker) used by tests, keyless
+    CI, and model-less environments (D-011).
+  - `governing.py` — the structured-first governing-document filter: SQL resolves
+    bases + effective amendments as of a date; superseded sections excluded at clause
+    granularity (`royalties→§3` etc., mapping pinned against the renderer).
+  - `search.py` — governing filter → FTS (`ts_rank_cd`) + pgvector cosine
+    (ivfflat.probes=16) → RRF (k=60, 50/leg) → cross-encoder rerank on the fused
+    top-30 only, `RERANK`-toggleable; single-model store enforced (query/store
+    embedder mismatch raises); zero-embedding stores degrade to recorded `fts-only`.
+  - `embed.py` — `make embed`: reconcile chunks by content hash (unchanged rows
+    untouched, changed re-embed, stale deleted) → embed missing/model-changed rows →
+    ivfflat build + ANALYZE after bulk (retrained when vectors changed). Idempotent;
+    `--best-effort` (compose init) builds chunks even when no model can load.
+- `backline/tools/` — the rest of the §4.3 matrix, all Pydantic-typed `Tool` bindings:
+  - `retrieval.py` — `search_contracts` (structural citations `FBR-C-00501 §3`,
+    artist/as-of/history params, graceful unknown-artist outcome) and `read_clause`
+    (verbatim clause fetch; misses list what exists).
+  - `calc.py` + `ledger.py` — `calc_royalties` (D-012): ledger mode rebuilds the full
+    engine input from Postgres (attribution by ISRC/UPC + era-by-origin-date, terms
+    via `resolve_terms` per period, advances/expenses as charges, opening balances,
+    FX) and runs the one royalty engine over reported lines minus agent exclusions
+    (structurally invalid lines auto-excluded and reported); spot mode rates
+    hypothetical rows under governing terms with true escalator state, labeled
+    pre-recoupment.
+  - `normalizer.py` + `statements.py` — the Reconciler chain: `ingest_statement`
+    (all 6 CSV dialects parsed back to canonical values, datagen's own `line_hash`
+    recomputed, staged into `staging.ingested_lines` only — statements stay
+    `received`; parse report with per-currency totals + duplicate/negative/off-period
+    signals), `match_lines` (ISRC/UPC catalog partition over label or staged lines),
+    `submit_batch` (the one write path toward money: `proposed` batch + allocations +
+    flags, run-stamped; no approval path exists in any tool).
+  - `notes.py` — `save_note`/`recall_notes` on `app.notes`, entity-ref validated,
+    run-stamped. `artists.py` — shared exact-then-fuzzy artist resolution with
+    candidate suggestions.
+- `backline/core/runcontext.py` — ambient run id (`ContextVar`) set by the runtime
+  around each run; how gated writes stamp `submitted_by_run`/`created_by` without
+  widening the tool-handler signature.
+- `evals/retrieval_probe.py` (+ `make retrieval-probe`) — 40 deterministic clause-lookup
+  queries with structurally resolved golds, run through the real pipeline in
+  {scoped, unscoped} × {rerank, fused}; prints MRR/recall@k + the rerank lift.
+- Wiring: `make embed` real; compose `init` now runs migrate → seed → embed
+  (--best-effort); `emit-period` additionally records its month's FX rows (D-012);
+  new settings `EMBED_MODEL`/`RERANK_MODEL`/`SQL_ROW_LIMIT`/`SQL_COST_CEILING`
+  (.env.example annotated); `sqlglot` added as a core dependency,
+  `sentence-transformers` as the optional `embed` extra.
+
+**Verified**
+
+- `make lint` / `make typecheck` (mypy --strict, 115 files) green; full suite with
+  `DATABASE_URL` against Postgres 16 + pgvector: **343 passed, 2 deselected** (140 new
+  tests; includes all Phase 1/2 suites — world fingerprint untouched).
+- **The answer key reproduced from the DB**: for all **130 of 150** artists untouched
+  by line-level anomalies, ledger mode matches `truth.expected_ledger` *exactly* —
+  gross, recouped, net_payable, balance_after, microdollar precision, full 12-period
+  chain (D-001 proven end-to-end from Postgres). A sensitivity canary asserts
+  corrupted artists diverge; excluding the registry's injected lines reconciles
+  dup/bleed/negative/spike artists back to the key.
+- Normalizer round-trip: for every one of the 6 dialects, parsing the rendered
+  2026-02 drop reproduces the DB's canonical values and datagen's stored line hashes.
+- Reconciler flow on a fresh month: `emit-period 2026-07` → ingest stages 5K+ lines
+  (label untouched, status stays `received`, re-ingest replaces), match surfaces the
+  injected unknown-ISRCs, staged lines flow through `calc_royalties(include_staged)`,
+  `submit_batch` lands `proposed` with the run stamp.
+- Embed job: 385 contracts → **2,961 clause chunks**; second run touches nothing;
+  a tampered chunk is restored and re-embedded alone; ivfflat present after build.
+- Retrieval probe (offline deterministic stack — hash-bow embedder +
+  lexical-overlap reranker; see deviation below):
+
+  ```
+  retrieval probe — 40 clause-lookup queries, embedder=hash-bow-384-v1,
+  reranker=lexical-overlap-v1, as_of=2026-06-30
+
+  mode                  MRR R@1  R@3  R@5  R@10
+  scoped/fused        0.251 0.10 0.23 0.45 0.72
+  scoped/rerank       0.387 0.20 0.50 0.62 0.85
+  unscoped/fused      0.006 0.00 0.00 0.00 0.05
+  unscoped/rerank     0.006 0.00 0.00 0.00 0.05
+
+  rerank lift (scoped MRR): 0.251 → 0.387 (+0.136)
+  ```
+
+  The rerank stage lifts scoped MRR by **+0.136** (R@3 0.23→0.50) even on the lexical
+  stack. The unscoped collapse is the design argument in numbers: with the artist only
+  *named in the text*, lexical retrieval can't find the governing clause — entity and
+  governance scoping belong in structure (D-002), not in the embedding.
+- End-to-end mock-agent run (DoD): one scripted `AgentRuntime` run calls all nine
+  tools in sequence against the seeded world — the adversarial `truth` query dies as
+  a `sql_policy` guardrail span while the run recovers and completes; every other
+  tool executes cleanly; staging writes + note are stamped with the traced run id;
+  span tree asserted from both the in-memory sink and Postgres.
+
+**Deviations / notes**
+
+- **Real-model retrieval numbers not produced in this session**: the build sandbox's
+  egress policy blocks HuggingFace downloads (bge-small / ms-marco cannot load), so
+  the probe ran on the deterministic offline stack and those are the numbers recorded
+  above — clearly labeled, mechanism identical (same precedent as Phase 0's compose
+  cold-boot and Phase 1's tiktoken estimate). `make retrieval-probe` on the dev
+  machine (with `uv sync --extra embed`) produces the bge + cross-encoder numbers;
+  they belong in this log when run.
+- The Docker image ships without the `embed` extra for now — PyPI's linux torch wheels
+  are CUDA builds (~5 GB); compose init runs `embed --best-effort` (chunks + FTS-only
+  search everywhere, full hybrid after a host-side `make embed`). Rationale + the
+  CPU-wheel re-lock follow-up recorded in D-011.
+- §4.3's "staged raw lines" is interpreted strictly per invariant 5: a new
+  `staging.ingested_lines` table, statements stay `received` until batch approval
+  promotes (Phase 6 review action) — D-010.
+- `emit-period` gained an FX-row insert for its month (runtime calculator needs it for
+  staged-period math); seeded content and the golden fingerprint are untouched.
+- Entity-keyed *auto*-recall of notes into agent context (the §4.5 scope-3 tail) rides
+  with the Phase 4 router as planned; the durable notes tools shipped here.
+
+**Deferred**: nothing from the Phase 3 scope.

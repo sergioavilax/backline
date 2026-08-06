@@ -263,3 +263,138 @@ the in-memory build (unit test), a fresh build (same test), and the loaded Postg
 content (integration test) — so accidental world drift fails CI before it silently moves
 the answer key. `truth.expected_ledger.net_payable` stores the cent-rounded *value* at
 the column's 6dp scale.
+
+---
+
+## D-002 — Structured-first governing-document retrieval (Phase 3; reserved by BUILD_PLAN §4.4)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** "What is X's sync rate?" is only answerable from the clauses that *govern*
+X on the date in question. Which documents those are is not a similarity question — it
+is a relational fact: base contracts effective by that date (termination does not
+un-govern; post-term accounting, D-003), plus effective amendments, minus the base
+sections those amendments replaced.
+
+**Decision.** Resolve governance in SQL *before* any text ranking
+(`backline/rag/governing.py`), then run hybrid retrieval only over governing chunks.
+Amendment supersession is applied at clause granularity via a fixed section→clause map
+(`term_territory→§2, royalties→§3, advances_recoupment→§4` — pinned against the
+renderer by test), so a superseded rate clause is structurally unfindable, not merely
+outranked. Historical questions opt in explicitly (`include_history=true`), which lifts
+both the supersession exclusion and the effective-date cutoff.
+
+**Mechanics around it.** Chunks *are* clauses (`rag.contract_chunks`, parsed from the
+renderer's deterministic `.txt` sidecars — no token windows over legalese), keyed
+(contract_id, clause_no, part) so citations are structural. The two ranking legs are
+Postgres FTS (`ts_rank_cd` over a weighted tsvector: heading A, body B) and pgvector
+cosine, fused with RRF (k=60) over 50 candidates per leg; the cross-encoder reranks
+only the fused top-30 (§9), toggleable via `RERANK`. The `rag` schema is *not* in the
+SQL tool's allowlist — agents reach chunks only through `search_contracts`/`read_clause`.
+
+**Alternative rejected**: metadata-filtered vector search over *everything* with
+recency boosting. Freshness is not recency — an 2019 base §5 governs today while its
+2024 §3 may be dead; a boost can only make stale text less likely, never wrong. With
+supersession already structural in the world (`label.amendments.replaced_sections`),
+re-deriving it statistically trades a correct join for a tunable error rate. The cost
+of the chosen design — retrieval quality now depends on an upstream SQL filter being
+right — is covered by dedicated governing-filter tests rather than eval vibes.
+
+**Measured consequence** (offline deterministic stack): artist-scoped retrieval over
+governing docs reaches MRR 0.387 / recall@10 0.85, while the same queries over the
+full corpus with the artist only *named in the text* collapse to MRR ~0.006 — the
+strongest empirical argument that entity/govern scoping belongs in structure, not in
+the embedding.
+
+---
+
+## D-010 — Agent ingestion is staging-only; approval promotes (Phase 3)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** §4.3's `ingest_statement` says "parse a `/data/inbox` CSV → *staged raw
+lines* + parse report", but §3.3 defines no staging table for lines, and
+`label.statements.status` has a `received → ingested` lifecycle someone must drive.
+
+**Decision.** Invariant 5 wins, literally: everything an agent parses lands in a new
+`staging.ingested_lines` table (migration 0003); `label.statement_lines` and
+`label.statements.status` are never touched by any tool. A statement stays `received`
+until a human approves the submitted batch — promotion (staged lines → label, status
+flip) is the Phase 6 review action. Consequences embraced: `match_lines` and
+`calc_royalties(include_staged=true)` read staged lines for received statements and
+label lines for ingested ones, and Analyst SQL over `label.statement_lines` never sees
+un-reviewed money (staging is separately queryable). Re-ingestion replaces the
+statement's own staged rows (idempotent); re-seeding truncate-cascades staged lines
+away with their statements.
+
+**Alternative rejected**: writing parsed lines straight into `label.statement_lines`
+with a status flip — simpler plumbing, but it makes "agents propose, humans approve"
+false for the highest-volume write in the system.
+
+---
+
+## D-011 — Embedding stack: optional extra, recorded model, deterministic offline twin (Phase 3)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Decisions.**
+
+- **`sentence-transformers` is an optional extra** (`uv sync --extra embed`), not a core
+  dependency: it drags torch in, and PyPI's linux torch wheels are CUDA builds (~5 GB
+  installed). Keyless CI and unit tests never load it.
+- **The offline twin is a real implementation, not a mock**: `HashingEmbedder`
+  (sha256 feature-hashed unigram+bigram bag-of-words, signed 384-dim buckets, sublinear
+  tf, L2-normalized) and `LexicalReranker` (query-term coverage + bigram bonus) are
+  deterministic, dependency-free stand-ins that measure *lexical* similarity honestly.
+  Tests, keyless CI, and model-less environments run them (`EMBED_MODEL=hash`,
+  `RERANK_MODEL=lexical`); the retrieval probe labels which stack produced its numbers.
+- **The chunk store is single-model by construction**: each row records
+  `embedding_model`; queries must embed with the model that built the store (mismatch
+  raises), and switching models re-embeds everything. A store with no embeddings
+  degrades to FTS-only search, recorded in the result — so compose init runs
+  `rag.embed --best-effort` and a cold boot without model egress still yields a fully
+  working (FTS-only) stack instead of a dead one.
+- **The Docker image ships without the extra** for now (image-size discipline; CUDA
+  wheels). Full hybrid embeddings build via host-side `make embed`. The intended
+  follow-up, on a network that can reach it, is re-locking torch against the PyTorch
+  CPU wheel index and flipping `--extra embed` on in `docker/api.Dockerfile` — a
+  two-line change noted there.
+- The ivfflat cosine index is created by the embed job *after* bulk embedding (then
+  `ANALYZE`), and retrained (drop + recreate) whenever new vectors were written —
+  never by the migration, where it would train on an empty table (§9 pitfall).
+
+---
+
+## D-012 — Runtime calculator: DB assembly semantics (Phase 3)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+Judgment calls in `backline/tools/ledger.py` / `calc.py` that §4.3 left open:
+
+- **The tool computes from *reported* lines** (label + optionally staged), not from any
+  cleaned set — the Reconciler's whole job is deciding what to exclude
+  (`exclude_line_ids`). Structurally impossible lines (non-positive units, negative
+  amounts) are auto-excluded and *reported*, because the engine rightly refuses
+  negative money. Pinned by test: every artist untouched by line-level anomalies
+  reproduces `truth.expected_ledger` exactly (all four columns, microdollar precision,
+  full 12-period chain) from Postgres alone — the D-001 single-implementation claim,
+  proven from the DB side; a sensitivity canary asserts corrupted artists *diverge*.
+- **Attribution is re-derived relationally**: ISRC → track → era base contract by the
+  track's origin release date (min release date across its releases — compilations
+  postdate origins by construction); blank-ISRC lines by UPC → single-artist release.
+  Era selection = last base with `effective_from ≤` the origin date (D-003 semantics).
+- **Two modes, one tool**: ledger (real history through a period, full waterfall) and
+  spot (hypothetical rows under terms as of a date, with true escalator state computed
+  by running the chain through the prior period; output is labeled PRE-RECOUPMENT).
+- **Store → revenue-type classification reads `datagen/world.yaml`** via
+  `datagen.config` — the label's store reference lives beside its feed definitions,
+  exactly as it would at a real label. Alternative rejected: a `label.stores` table
+  would be cleaner SQL but changes seeded content, forcing a golden-fingerprint
+  regeneration mid-phase for a lookup the runtime can read from config; revisit if a
+  later phase regenerates the golden anyway.
+- **`emit-period` now also records its month's FX rows** (from world.yaml, idempotent
+  insert) — staged-period math needs FX, and the seeded window's fingerprint is
+  untouched because seeded periods already exist.
+- Tools learn the proposing run via a `ContextVar` (`core/runcontext.py`) the runtime
+  sets around each run — `staging.*_by_run` / `app.notes.created_by` stamping without
+  widening the tool-handler signature.

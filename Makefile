@@ -1,6 +1,6 @@
 # Backline — developer entry points. `make help` lists targets.
 .DEFAULT_GOAL := help
-.PHONY: help up down logs ps test lint typecheck fmt doctor seed emit-period embed eval-smoke corpus-tokens
+.PHONY: help up down logs ps test lint typecheck fmt doctor seed emit-period embed retrieval-probe eval-smoke corpus-tokens
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -44,9 +44,12 @@ emit-period: ## Drop a new statement month into data/inbox, e.g. make emit-perio
 corpus-tokens: ## Print corpus token counts (the scale-claim evidence)
 	uv run python -m datagen corpus-tokens
 
-# ── Phase-gated targets (stubs fail loudly until their phase ships) ──────────
-embed: ## Build contract-chunk embeddings (Phase 3)
-	@echo "make embed: not implemented yet — ships in Phase 3 (RAG)." >&2; exit 1
+embed: ## Build clause chunks + embeddings (idempotent; EMBED_MODEL=hash for offline)
+	uv run python -m backline.rag.embed
 
+retrieval-probe: ## Measure retrieval quality (recall@k/MRR, rerank on vs off)
+	uv run python -m evals.retrieval_probe
+
+# ── Phase-gated targets (stubs fail loudly until their phase ships) ──────────
 eval-smoke: ## Keyless MockProvider eval plumbing test (Phase 5)
 	@echo "make eval-smoke: not implemented yet — ships in Phase 5 (evals)." >&2; exit 1
