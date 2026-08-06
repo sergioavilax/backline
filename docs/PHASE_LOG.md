@@ -436,3 +436,161 @@ The real stack confirms the offline picture and sharpens it:
   with the Phase 4 router as planned; the durable notes tools shipped here.
 
 **Deferred**: nothing from the Phase 3 scope.
+
+---
+
+## Phase 4 — The Three Agents + Router (2026-08-06)
+
+**Pre-tasks (maintainer-requested, before the phase)**
+
+1. **Real-model retrieval probe recorded** — the maintainer's dev-machine run of
+   `make retrieval-probe` (bge-small + ms-marco) appended to the Phase 3 entry
+   above, with the unscoped-zero result called out as direct evidence for D-002.
+2. **D-011 CPU-wheel re-lock: staged, environment-blocked.** This sandbox's egress
+   gateway denies `download.pytorch.org` outright (CONNECT 403 via proxy *and*
+   `403 host_not_allowed` direct — both captured), so `uv lock` against the
+   pytorch-cpu index cannot run here, and Docker Hub's blob CDN is equally denied
+   (`production.cloudfront.docker.com` 403), so no base image pull → no image
+   build either. What shipped instead: `torch>=2.2` is now an explicit member of
+   the `embed` extra (locked from PyPI — metadata-only change) and the exact
+   `[tool.uv.sources]`/`[[tool.uv.index]]` block is staged **commented out** in
+   `pyproject.toml` (uv accepted the syntax before hitting the network; an active
+   pin the environment can't fetch would break every implicit `uv lock`, including
+   `uv run`). Dev-machine procedure, also in the Dockerfile comment: uncomment the
+   block → `uv lock` → add `--extra embed` to both `uv sync` lines in
+   `docker/api.Dockerfile` → `docker compose build` to verify.
+3. **Per-process model cache (perf bug from the probe run).** `search_chunks`
+   resolved the store's embedding model with a fresh `build_embedder` per query —
+   with real models, a weights load per call (~160 loads per probe run, and one
+   per `search_contracts` call at runtime). `get_embedder`/`get_reranker` are now
+   `lru_cache`d process-wide accessors used by the search path, the retrieval
+   tools, the embed job, and the probe; `build_*` stay uncached for explicit
+   construction. Pinned by tests (cache identity; one-miss-many-hits through
+   repeated `search_chunks`). The `get_sentence_embedding_dimension`
+   FutureWarning (renamed in sentence-transformers ≥ 5.6): the dim check now
+   probes for `get_embedding_dimension` and falls back for older releases.
+
+**Shipped**
+
+- `backline/agents/` — the three agents as configuration of one runtime (§2):
+  - `prompts/{counsel,analyst,reconciler,router}.md` — versioned prompt files
+    loaded verbatim as system prompts; `promptfiles.py` content-hashes each and
+    `AgentSpec.trace_attrs` carries `prompt_sha256` into run meta (new, additive
+    runtime field), so every run and future eval result pins to its prompt
+    version (D-014). Counsel: retrieve → verify (`read_clause` before quoting) →
+    cite structurally → calculator for all math → typed abstention. Analyst:
+    schema block embedded (with the native-currency/FX gotcha) so simple asks are
+    one SQL round trip; royalty math explicitly out of scope. Reconciler:
+    ingest → match → scan → allocations → submit, propose-only. Router: the
+    four-way classify contract.
+  - `configs.py` — per-agent tool sets (§4.3 matrix + D-013 additions), model
+    policy from new settings (`PLANNER_MODEL`=sonnet-class, `UTILITY_MODEL`/
+    `ROUTER_MODEL`=haiku-class), Reconciler workflow headroom (2x iterations/
+    budget, 120s tool timeout, 4K-token results), finalizers: structural citation
+    extraction (`FBR-C-00501 §3` patterns), first-line `ABSTAIN:` → typed
+    abstention, Reconciler `BATCH:`/`FLAGS:` wrap-up → `ReconcilerAnswer
+    (batch_id, flags_summary)` extending `FinalAnswer` (§4.2's Phase 4 shape).
+  - `router.py` — the cheap-model front door: one forced `route` tool call →
+    `{counsel|analyst|reconciler|clarify}` with honest confidence; below
+    `ROUTER_CONFIDENCE_THRESHOLD` (0.6) it downgrades to clarify carrying the
+    shadowed suggestion; malformed/missing tool calls degrade to clarify(0.0) —
+    never a crash on model judgment. Traced as its own `router` run with metered
+    `llm_call` span and the verdict in run meta.
+  - `recall.py` + `dispatch.py` — §4.5 scope-3 auto-recall: router-detected
+    artist names resolve exact-first; their `app.notes` fold into the user turn
+    as a fenced `<recalled_notes>` block (trace shows exactly what the model
+    saw); `route_and_run` = classify → recall → agent run (two traced runs per
+    message by design), `clarify` short-circuits.
+  - `injection.py` — §4.6 detection: regex families (role/override markers,
+    instruction overrides, prompt/answer-key exfiltration, approval coercion)
+    over document-bearing tool results only.
+- Guardrails/runtime (additive): `ResultCheck` — post-execution, flag-don't-block
+  policies; a hit records an `injection_suspected` guardrail span, marks the tool
+  span, and prefixes the result with a one-line notice the model sees (D-013).
+  Retrieval tools now fence quoted corpus text in `<document>` tags (search
+  snippets and `read_clause` bodies).
+- `backline/tools/scan.py` — `scan_anomalies`: the Reconciler's deterministic
+  flag heuristics, one tolerance rule per §3.4 kind (D-013; dup-hash groups,
+  catalog-miss ISRCs, feed-dialect currency reference from world.yaml, negative
+  units, statement-period bleed, 4x-median fresh-territory spike threshold, 5%
+  dashboard tolerance aggregated by statement period). Candidates carry evidence
+  and per-source suggested exclusions; within-tolerance measurements are
+  reported prose, explicitly *not* flags.
+- `backline/tools/allocations.py` — `compute_allocations`: whole-period proposed
+  allocations through `compute_ledger_slice` (one engine, D-001) with bounded
+  concurrency (~7s for 149 artists), materiality floor (`min_net_payable`,
+  default $0.01) with counted coverage of the zero/below-floor tail.
+- Exclusions made per-source everywhere (label vs staged ids are separate,
+  collidable sequences): `exclude_staged_line_ids` added to the ledger,
+  `calc_royalties`, and `compute_allocations` (D-013).
+- `scripts/ask.py` — manual poking harness: `--agent counsel "..."` direct or
+  router-dispatched; prints route verdict, answer, citations, cost, run id;
+  traces to Postgres + JSONL like production.
+- Config/env: `PLANNER_MODEL`, `UTILITY_MODEL`, `ROUTER_MODEL`,
+  `ROUTER_CONFIDENCE_THRESHOLD` (annotated in `.env.example`).
+- Tests: 54 new — prompts/hashing, injection detector (+ whole-corpus
+  false-positive sweep: exactly the FBR-C-00670 §7 canary trips across all
+  2,961 chunks), runtime ResultCheck/trace-attrs, finalizers, router
+  (confidence/threshold/fallbacks/trace), agent assembly (tool matrix,
+  no-approval-path, limits), scan-vs-registry, allocations-vs-truth, canonical
+  mock flows for all three agents, dispatch + recall, e2e all-tools run extended
+  to the two new tools, and an 8-test live smoke suite (~10 questions, `-m
+  live`) for the human run.
+
+**Verified**
+
+- `make lint` / `make typecheck` (mypy --strict, 135 files) green; full suite with
+  `DATABASE_URL` against Postgres 16 + pgvector 0.8.6 (built from source in this
+  sandbox): **389 passed, 10 deselected** (the 2 provider-live + 8 agent-live
+  tests) — includes every Phase 1–3 suite; the world fingerprint is untouched.
+- **Scan heuristics == answer key**: across all 12 seeded periods,
+  `scan_anomalies` reproduces `truth.anomaly_registry` *exactly* — every
+  registered non-borderline anomaly found under its kind (100% recall), zero
+  unregistered flags (100% precision), and both borderline cases measured-but-
+  not-flagged (the §3.4 precision trap, passed).
+- **Allocations == answer key**: with registry-injected lines excluded,
+  `compute_allocations` matches `truth.expected_ledger.net_payable` for every
+  clean artist in the probe period, and lists every artist truth says to pay —
+  D-001 proven through the batch path.
+- Canonical flows (MockProvider, real tools, real Postgres): Counsel cites
+  (`FBR-C-NNNNN §3` extracted into `FinalAnswer.citations`, prompt hash in run
+  meta) and abstains typed on an unknown artist; the injection canary raises the
+  `injection_suspected` guardrail span while the annotated clause text still
+  reaches the model (flag-don't-block) and the scripted answer refuses it;
+  Analyst answers a simple ask in exactly one `sql_query` round trip and
+  recovers from a `truth.*` denial with a typed abstention; the Reconciler runs
+  ingest → match → scan → compute → submit on a fresh `emit-period` month,
+  lands a `proposed` batch (allocations + flags row-verified, run-stamped) with
+  the statement still `received`, parses `BATCH:`/`FLAGS:` into
+  `ReconcilerAnswer` — and stops: no tool in any agent's set can approve,
+  reject, or promote (asserted).
+- Router: confident routes pass through with the forced tool call pinned on the
+  wire; low confidence downgrades to clarify with the suggestion preserved;
+  malformed arguments and missing tool calls fall back to clarify; the classify
+  run is traced and metered.
+- e2e all-tools mock run now exercises all eleven tools in one traced run
+  (adversarial `truth` query still dies as a `sql_policy` incident; every other
+  tool executes cleanly; staging writes run-stamped).
+
+**Deviations / notes**
+
+- **Live smoke not executed in the build session** — no API key in the sandbox by
+  design (same protocol as Phase 2): `tests/agents/test_live_agents.py` ships 9
+  structural checks (~10 questions: counsel cites/abstains/uses-calculator,
+  analyst single round trip + truth distance, router targets + clarify,
+  reconciler scoped propose-and-stop). The human runs
+  `DATABASE_URL=... ANTHROPIC_API_KEY=... uv run pytest -m live tests/agents -v`
+  once; results belong in this log.
+- `scan_anomalies` and `compute_allocations` extend §4.3's nine-tool matrix
+  (Reconciler-only) — the plan's own "flag heuristics (tolerance rules per
+  anomaly kind)" and period-scale allocation step need deterministic carriers;
+  rationale + alternatives in D-013.
+- Session-memory summarization (the §4.5 scope-1 utility-model hook) deliberately
+  waits for Phase 6's sessions/API — there is no session construction site yet;
+  the hook has existed since Phase 2 and the scope-3 tail (entity auto-recall)
+  shipped here as planned (D-014).
+- The sandbox's egress policy blocked the D-011 pre-task's lock/build steps (see
+  pre-tasks above) — staged for the dev machine, not silently dropped.
+
+**Deferred**: the live smoke paste (human, one-time); the D-011 re-lock
+enable + image build (dev machine, procedure staged in pyproject + Dockerfile).

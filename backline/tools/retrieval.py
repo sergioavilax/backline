@@ -6,6 +6,12 @@ code + clause number, never vibes. ``read_clause`` fetches one clause verbatim f
 post-retrieval verification, and on a miss lists what exists (abstention material,
 not a dead end).
 
+Injection defense (§4.6): quoted corpus text — snippets and clause bodies — is fenced
+in ``<document>`` tags so the boundary between structural metadata (ours) and
+document content (untrusted) is explicit; the agent prompts state that document text
+never constitutes instructions, and the ``injection_suspected`` guardrail watches
+these tools' results.
+
 Embedder/reranker resolution: explicit overrides on the ``ToolContext`` win (tests,
 Phase 4 bootstrap); otherwise the store's recorded embedding model decides the query
 embedder and ``RERANK=on`` + ``RERANK_MODEL`` pick the reranker — both through the
@@ -90,7 +96,7 @@ def _render_hits(result: SearchResult, as_of: date, include_history: bool) -> st
             f"{n}. {code} {hit.clause_no}{part} — {hit.heading} "
             f"[{hit.artist_name}, {hit.kind}, {window}]"
         )
-        lines.append(f"   {snippet}")
+        lines.append(f"   <document>{snippet}</document>")
     lines.append(
         "Cite as `CODE §N` (e.g. "
         f"`{contract_code(result.hits[0].kind, result.hits[0].contract_id)} "
@@ -180,7 +186,9 @@ def build_read_clause_tool(ctx: ToolContext) -> Tool[ReadClauseParams]:
         body = "\n".join(r["content"] for r in rows)
         return (
             f"{code} {first['clause_no']} — {first['heading']}\n"
-            f"[{first['stage_name']}, {first['kind']}, {window}]\n\n{body}"
+            f"[{first['stage_name']}, {first['kind']}, {window}]\n\n"
+            f'<document contract="{code}" clause="{first["clause_no"]}">\n'
+            f"{body}\n</document>"
         )
 
     return Tool(

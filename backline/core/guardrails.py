@@ -1,8 +1,10 @@
-"""Guardrail frame (BUILD_PLAN §4.6, Phase 2 scope).
+"""Guardrail frame (BUILD_PLAN §4.6).
 
-Phase 2 ships the skeleton: hard run limits (iteration/budget caps), Pydantic tool-arg
-validation, and a registration point for later policies — Phase 3 plugs the SQL
-allowlist in here, Phase 4 the document-injection flagging. Every denial is an
+Phase 2 shipped the skeleton: hard run limits (iteration/budget caps), Pydantic
+tool-arg validation, and the ``ToolCheck`` registration point Phase 3's SQL allowlist
+plugs into. Phase 4 adds ``ResultCheck`` — policies over tool *results* (document-
+injection flagging: retrieved contract text may contain instruction-shaped content;
+the check raises an incident without blocking the result). Every denial or flag is an
 ``Incident`` the runtime records as a ``guardrail`` span, so incidents are visible in
 the Trace Inspector, not buried in logs.
 """
@@ -48,13 +50,24 @@ class Incident(BaseModel):
 
 
 ToolCheck = Callable[[str, dict[str, Any]], Incident | None]
-"""Extension point: later phases register policy checks (SQL allowlist, injection...)."""
+"""Pre-execution policy over (tool_name, raw_args) — a hit denies the call."""
+
+ResultCheck = Callable[[str, str], Incident | None]
+"""Post-execution policy over (tool_name, result_text) — a hit flags, never blocks:
+the result still reaches the model (annotated by the runtime), the incident becomes a
+``guardrail`` span. Injection detection lives here (§4.6)."""
 
 
 class Guardrails:
-    def __init__(self, limits: RunLimits, checks: Sequence[ToolCheck] = ()) -> None:
+    def __init__(
+        self,
+        limits: RunLimits,
+        checks: Sequence[ToolCheck] = (),
+        result_checks: Sequence[ResultCheck] = (),
+    ) -> None:
         self.limits = limits
         self._checks = list(checks)
+        self._result_checks = list(result_checks)
 
     def check_iteration(self, iteration: int) -> Incident | None:
         if iteration > self.limits.max_iterations:
@@ -96,3 +109,11 @@ class Guardrails:
             if incident is not None:
                 return None, incident
         return validated, None
+
+    def check_tool_result(self, tool_name: str, result_text: str) -> Incident | None:
+        """Run the post-execution policies; first hit wins (flag, don't block)."""
+        for check in self._result_checks:
+            incident = check(tool_name, result_text)
+            if incident is not None:
+                return incident
+        return None

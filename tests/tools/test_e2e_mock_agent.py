@@ -1,8 +1,9 @@
-"""Phase 3 DoD: one mock-agent run exercising every tool (skips without DATABASE_URL).
+"""Phase 3/4 DoD: one mock-agent run exercising every tool (skips without DATABASE_URL).
 
-A scripted MockProvider drives the real ``AgentRuntime`` through all nine §4.3 tools
-against the seeded world — including one adversarial ``sql_query`` against ``truth``
-that must die at the guardrail as a traced incident while the run itself recovers and
+A scripted MockProvider drives the real ``AgentRuntime`` through all eleven tools
+(§4.3's nine plus Phase 4's ``scan_anomalies``/``compute_allocations``) against the
+seeded world — including one adversarial ``sql_query`` against ``truth`` that must
+die at the guardrail as a traced incident while the run itself recovers and
 completes. Asserts the span tree, the staging writes, and the run-id stamping that
 flows through the ambient run context.
 """
@@ -87,6 +88,14 @@ async def test_mock_agent_exercises_every_tool(
             path=f"data/inbox/kinetic_digital_{emitted}.csv",
         ),
         call("t7", "match_lines", statement_id=statement_id),
+        call("t7b", "scan_anomalies", period=emitted),
+        call(
+            "t7c",
+            "compute_allocations",
+            period=emitted,
+            include_staged=True,
+            min_net_payable="100",
+        ),
         call(
             "t8",
             "submit_batch",
@@ -124,7 +133,7 @@ async def test_mock_agent_exercises_every_tool(
         model="mock-sonnet",
         tools=build_all_tools(ctx),
         checks=[sql_policy_check],
-        limits=RunLimits(max_iterations=12, run_budget_usd=Decimal("5")),
+        limits=RunLimits(max_iterations=16, run_budget_usd=Decimal("5"), tool_timeout_s=120.0),
     )
 
     try:
@@ -145,6 +154,8 @@ async def test_mock_agent_exercises_every_tool(
         "calc_royalties",
         "ingest_statement",
         "match_lines",
+        "scan_anomalies",
+        "compute_allocations",
         "submit_batch",
         "save_note",
         "recall_notes",

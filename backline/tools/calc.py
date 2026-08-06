@@ -55,7 +55,12 @@ class CalcRoyaltiesParams(BaseModel):
     )
     exclude_line_ids: list[int] = Field(
         default_factory=list,
-        description="ledger mode: statement line ids to exclude (suspected anomalies)",
+        description="ledger mode: label statement line ids to exclude (suspected anomalies)",
+    )
+    exclude_staged_line_ids: list[int] = Field(
+        default_factory=list,
+        description="ledger mode: staged (staging.ingested_lines) ids to exclude — staged "
+        "ids are a separate sequence from label line ids",
     )
     include_staged: bool = Field(
         default=False,
@@ -90,6 +95,7 @@ def build_calc_royalties_tool(ctx: ToolContext) -> Tool[CalcRoyaltiesParams]:
             artist_id=artist_id,
             period=params.period or "",
             exclude_line_ids=tuple(params.exclude_line_ids),
+            exclude_staged_line_ids=tuple(params.exclude_staged_line_ids),
             include_staged=params.include_staged,
         )
         lines = [
@@ -125,6 +131,11 @@ def build_calc_royalties_tool(ctx: ToolContext) -> Tool[CalcRoyaltiesParams]:
             + (
                 f" · excluded on request: {list(s.excluded_line_ids)}"
                 if s.excluded_line_ids
+                else ""
+            )
+            + (
+                f" · staged excluded on request: {list(s.excluded_staged_line_ids)}"
+                if s.excluded_staged_line_ids
                 else ""
             )
             + (

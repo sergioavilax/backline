@@ -102,7 +102,8 @@ class LedgerSlice:
     contracts_used: tuple[int, ...]
     n_lines_used: int
     n_staged_used: int
-    excluded_line_ids: tuple[int, ...]  # requested exclusions that matched lines
+    excluded_line_ids: tuple[int, ...]  # requested exclusions that matched label lines
+    excluded_staged_line_ids: tuple[int, ...]  # requested exclusions that matched staged lines
     auto_excluded_line_ids: tuple[int, ...]  # negative/zero-unit or negative-amount lines
 
 
@@ -391,6 +392,7 @@ async def compute_ledger_slice(
     artist_id: int,
     period: str,
     exclude_line_ids: tuple[int, ...] | list[int] = (),
+    exclude_staged_line_ids: tuple[int, ...] | list[int] = (),
     include_staged: bool = False,
 ) -> LedgerSlice:
     world = await _load_artist_world(source, artist_id)
@@ -402,12 +404,19 @@ async def compute_ledger_slice(
     raw_lines = await _fetch_lines(
         source, world, through_period=period, include_staged=include_staged
     )
+    # Label and staged ids are separate sequences and can collide numerically —
+    # exclusions are therefore matched per source, never by bare id across both.
     excluded_set = set(exclude_line_ids)
+    excluded_staged_set = set(exclude_staged_line_ids)
     used: list[_SourceLine] = []
     excluded_found: list[int] = []
+    excluded_staged_found: list[int] = []
     auto_excluded: list[int] = []
     for line in raw_lines:
-        if line.id in excluded_set:
+        if line.staged and line.id in excluded_staged_set:
+            excluded_staged_found.append(line.id)
+            continue
+        if not line.staged and line.id in excluded_set:
             excluded_found.append(line.id)
             continue
         if line.units <= 0 or line.gross_amount < 0:
@@ -439,6 +448,7 @@ async def compute_ledger_slice(
         n_lines_used=len(used),
         n_staged_used=staged_used,
         excluded_line_ids=tuple(sorted(excluded_found)),
+        excluded_staged_line_ids=tuple(sorted(excluded_staged_found)),
         auto_excluded_line_ids=tuple(sorted(auto_excluded)),
     )
 

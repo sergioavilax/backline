@@ -21,7 +21,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from backline.core.costmeter import CostMeter
-from backline.core.guardrails import Guardrails, Incident, RunLimits, ToolCheck
+from backline.core.guardrails import Guardrails, Incident, ResultCheck, RunLimits, ToolCheck
 from backline.core.memory import SessionMemory, WorkingMemory
 from backline.core.runcontext import current_run_id
 from backline.core.trace import RunHandle, SpanHandle, Tracer
@@ -107,9 +107,12 @@ class AgentSpec:
     utility_model: str | None = None  # summarization / compression model (Haiku-class)
     limits: RunLimits = field(default_factory=RunLimits)
     checks: Sequence[ToolCheck] = ()
+    result_checks: Sequence[ResultCheck] = ()  # flag-don't-block policies (injection, §4.6)
     finalize: Finalizer = default_finalize
     tool_choice: str = "auto"
     max_tokens: int = 4096
+    # Extra run-meta attrs (e.g. prompt_sha256) so eval results pin to prompt versions.
+    trace_attrs: Mapping[str, Any] = field(default_factory=dict)
 
 
 class RunResult(BaseModel):
@@ -160,7 +163,7 @@ class AgentRuntime:
         session: SessionMemory | None = None,
     ) -> RunResult:
         provider = self._provider_for(agent.model)
-        guardrails = Guardrails(agent.limits, agent.checks)
+        guardrails = Guardrails(agent.limits, agent.checks, agent.result_checks)
         costmeter = CostMeter(self._registry)
         working = WorkingMemory()
         tool_map = {tool.name: tool for tool in agent.tools}
@@ -176,7 +179,9 @@ class AgentRuntime:
         iterations = 0
 
         async with self._tracer.run(
-            agent=agent.name, session_id=session_id, meta={"model": agent.model}
+            agent=agent.name,
+            session_id=session_id,
+            meta={"model": agent.model, **dict(agent.trace_attrs)},
         ) as run:
             # Publish the run id so tool handlers can stamp gated writes
             # (submitted_by_run / created_by) without widening the handler signature.
@@ -323,6 +328,16 @@ class AgentRuntime:
                     is_error=True,
                 )
             span.attrs["latency_ms"] = int((time.perf_counter() - started) * 1000)
+
+            # Post-execution policies (§4.6): flag, never block — the model still sees
+            # the result, prefixed with the notice, and the incident is a span.
+            result_incident = guardrails.check_tool_result(call.name, raw)
+            if result_incident is not None:
+                await self._record_incident(parent, result_incident)
+                span.attrs["guardrail"] = result_incident.kind
+                raw = (
+                    f"[guardrail notice — {result_incident.kind}: {result_incident.detail}]\n{raw}"
+                )
 
             worked = working.record(call.name, raw)
             if worked.deduped:
