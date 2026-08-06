@@ -179,7 +179,11 @@ class AgentRuntime:
         *,
         session_id: UUID | None = None,
         session: SessionMemory | None = None,
+        run_id: UUID | None = None,
     ) -> RunResult:
+        """Execute one agent run. ``run_id`` may be pre-assigned by the caller —
+        the Phase 6 API announces the id over SSE *before* the run starts so
+        clients can subscribe to the live span stream from span one."""
         provider = self._provider_for(agent.model)
         guardrails = Guardrails(agent.limits, agent.checks, agent.result_checks)
         costmeter = CostMeter(self._registry)
@@ -198,6 +202,7 @@ class AgentRuntime:
 
         async with self._tracer.run(
             agent=agent.name,
+            run_id=run_id,
             session_id=session_id,
             meta={"model": agent.model, **dict(agent.trace_attrs)},
         ) as run:
