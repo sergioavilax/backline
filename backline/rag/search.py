@@ -22,7 +22,7 @@ from typing import Any
 import asyncpg
 
 from backline.rag.embedder import Embedder, get_embedder, vector_literal
-from backline.rag.governing import governing_docs
+from backline.rag.governing import GoverningDoc, governing_docs
 from backline.rag.reranker import Reranker
 
 RRF_K = 60  # standard reciprocal-rank-fusion constant
@@ -59,6 +59,9 @@ class SearchResult:
     mode: str  # "hybrid" | "fts-only"
     embedder_id: str | None
     reranked_by: str | None
+    # Artist-scoped, non-history searches carry the resolved governing set so callers
+    # can present the full era inventory, not just whatever ranked into top_k.
+    governing: tuple[GoverningDoc, ...] = ()
 
 
 ChunkKey = tuple[int, str, int]
@@ -118,12 +121,15 @@ async def search_chunks(
 
     filters = ["1 = 1"]
     params: list[Any] = []
+    governing: tuple[GoverningDoc, ...] = ()
     if include_history:
         if artist_id is not None:
             params.append(artist_id)
             filters.append(f"ch.artist_id = ${len(params)}")
     else:
         docs = await governing_docs(source, artist_id=artist_id, as_of=as_of)
+        if artist_id is not None:  # bounded: one artist's documents, not the label's 385
+            governing = tuple(docs)
         ids = [d.contract_id for d in docs]
         dead = [f"{d.contract_id}:{clause}" for d in docs for clause in d.excluded_clauses]
         params.append(ids)
@@ -228,4 +234,5 @@ async def search_chunks(
         mode="hybrid" if stored_model is not None else "fts-only",
         embedder_id=embedder_id,
         reranked_by=reranked_by,
+        governing=governing,
     )

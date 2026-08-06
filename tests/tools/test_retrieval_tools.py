@@ -5,7 +5,7 @@ structural citations, artist scoping/resolution, as-of dating, and the exact-tex
 fetch that backs post-retrieval verification.
 """
 
-from datetime import date
+from datetime import date, timedelta
 
 import asyncpg
 import pytest
@@ -106,6 +106,111 @@ async def test_read_clause_accepts_bare_clause_numbers(
     with_sign = await tool.handler(tool.params(contract_id=contract_id, clause_no="§3"))
     bare = await tool.handler(tool.params(contract_id=contract_id, clause_no="3"))
     assert with_sign == bare
+
+
+async def test_search_lists_every_era_governing_document(
+    ctx: ToolContext, pool: asyncpg.Pool
+) -> None:
+    """Multi-era artists get a full governing-document inventory in every artist-scoped
+    result — terminated era deals keep governing their recordings (D-003), so hiding
+    them behind ranking produced false abstentions (Phase 6 verification, finding 1)."""
+    artist = await pool.fetchrow(
+        """
+        SELECT c.artist_id, a.stage_name
+        FROM label.contracts c JOIN label.artists a ON a.id = c.artist_id
+        WHERE c.kind = 'base'
+        GROUP BY c.artist_id, a.stage_name HAVING count(*) >= 3
+        ORDER BY c.artist_id LIMIT 1
+        """
+    )
+    codes = [
+        f"FBR-C-{r['id']:05d}"
+        for r in await pool.fetch(
+            "SELECT id FROM label.contracts WHERE artist_id = $1 AND kind = 'base' ORDER BY id",
+            artist["artist_id"],
+        )
+    ]
+    tool = build_search_contracts_tool(ctx)
+    out = await tool.handler(
+        tool.params(query="royalty rate", artist=artist["stage_name"], as_of_date=date(2026, 6, 30))
+    )
+    assert "Governing documents" in out
+    for code in codes:
+        assert code in out, f"era base {code} missing from the governing inventory"
+
+
+async def test_search_surfaces_terminated_era_sync_terms(
+    ctx: ToolContext, pool: asyncpg.Pool
+) -> None:
+    """The Beatriz Romano regression: an artist whose *terminated* era carries a sync
+    rate the current era lacks. The result must name the old era's contract in the
+    inventory, and the query-aware snippet must show the sync line itself."""
+    case = await pool.fetchrow(
+        """
+        SELECT old.id AS old_id, old.artist_id, a.stage_name
+        FROM label.contracts old
+        JOIN label.contract_terms ot ON ot.contract_id = old.id
+        JOIN label.artists a ON a.id = old.artist_id
+        WHERE old.kind = 'base' AND old.effective_to IS NOT NULL
+          AND ot.terms -> 'sections' -> 'royalties' -> 'rate_card'
+              @> '[{"revenue_type": "sync"}]'::jsonb
+          AND NOT EXISTS (
+            SELECT 1 FROM label.contracts cur
+            JOIN label.contract_terms ct ON ct.contract_id = cur.id
+            WHERE cur.artist_id = old.artist_id AND cur.kind = 'base'
+              AND cur.effective_to IS NULL
+              AND ct.terms -> 'sections' -> 'royalties' -> 'rate_card'
+                  @> '[{"revenue_type": "sync"}]'::jsonb
+          )
+        ORDER BY old.id LIMIT 1
+        """
+    )
+    assert case is not None, "world should contain a terminated-era-only sync artist"
+    tool = build_search_contracts_tool(ctx)
+    out = await tool.handler(
+        tool.params(query="sync rate", artist=case["stage_name"], as_of_date=date(2026, 6, 30))
+    )
+    assert f"FBR-C-{case['old_id']:05d}" in out  # the era that answers the question
+    assert "synchronization" in out  # visible in a snippet, not hidden past char 240
+
+
+async def test_search_no_governing_documents_says_so(ctx: ToolContext, pool: asyncpg.Pool) -> None:
+    artist = await pool.fetchrow(
+        """
+        SELECT a.stage_name, min(c.effective_from) AS first
+        FROM label.artists a JOIN label.contracts c ON c.artist_id = a.id
+        GROUP BY a.id, a.stage_name ORDER BY a.id LIMIT 1
+        """
+    )
+    tool = build_search_contracts_tool(ctx)
+    out = await tool.handler(
+        tool.params(
+            query="royalty rate",
+            artist=artist["stage_name"],
+            as_of_date=artist["first"] - timedelta(days=1),
+        )
+    )
+    assert "No documents govern" in out
+
+
+async def test_read_clause_notes_supersession(ctx: ToolContext, pool: asyncpg.Pool) -> None:
+    """Reading a base §3 that an effective amendment replaced must say so — Counsel
+    cited a dead clause as governing during the Phase 6 verification run."""
+    case = await pool.fetchrow(
+        """
+        SELECT a.supersedes_contract_id AS base_id, a.amendment_id
+        FROM label.amendments a
+        WHERE a.replaced_sections @> ARRAY['royalties']
+        ORDER BY a.amendment_id LIMIT 1
+        """
+    )
+    tool = build_read_clause_tool(ctx)
+    out = await tool.handler(tool.params(contract_id=case["base_id"], clause_no="§3"))
+    assert f"FBR-A-{case['amendment_id']:05d}" in out
+    assert "replaced" in out.lower()
+
+    untouched = await tool.handler(tool.params(contract_id=case["base_id"], clause_no="§1"))
+    assert "replaced" not in untouched.lower()  # only superseded clauses get the note
 
 
 async def test_read_clause_missing_lists_available(ctx: ToolContext, pool: asyncpg.Pool) -> None:

@@ -1161,3 +1161,91 @@ prompt could bias `artists` extraction. Agent prompts untouched.
   checkout); the image build was the one uncovered path. Fixed and pushed
   directly to main as `0d0b386` — outside the one-phase-one-PR flow,
   recorded here as the deviation.
+
+## Phase 6 follow-up (2) — deeper verification: multi-era retrieval coverage, rate rendering, run-quality notes · 2026-08-06
+
+Second operator verification pass against live agents. Two defects fixed
+(D-028, D-029), three observations logged for later work. Phase 7 not
+started.
+
+**1. False abstention on multi-era artists** ("What's Beatriz Romano's sync
+rate?" → Counsel abstained claiming no sync rate exists in contracts
+624–627, while era-1 FBR-C-00624 §3 carries 54% — WORLD_AUDIT Audit 3).
+Investigated against the seeded world before touching anything:
+
+- The suspected governing-filter bug is **not real**: `governing_docs` for
+  artist 64 as of today returns all four era bases plus FBR-A-02033, with
+  only 627 §3 excluded (superseded). Terminated eras were never dropped —
+  D-003's "termination does not un-govern" held at the SQL layer all along.
+- FBR-C-00624 §3 renders the sync line and its chunk is searchable.
+- Root cause was what the agent *saw*: head-anchored 240-char snippets
+  structurally hid every rate-card line past the second (sync is always
+  third or later — 624 §3's snippet ended at "(a2) 2E+1% of Ne…", finding 2
+  compounding finding 1); nothing said four rate cards govern concurrently;
+  and `read_clause` served superseded text unmarked, which Counsel cited.
+
+Fix (tool rendering only; agent prompts and prompt hashes untouched):
+artist-scoped `search_contracts` results open with the artist's complete
+governing-document inventory (era bases + amendments, windows, supersession
+marks, one line of D-003 era-attribution semantics), zero-hit and
+no-governing-documents cases say so explicitly, snippets are query-aware
+windows (prefix-matched, deterministic), and `read_clause` flags base
+clauses replaced by an effective amendment. `GoverningDoc` gained windows +
+supersession fields; `SearchResult` carries the governing set. Tests:
+`tests/tools/test_tool_rendering.py` (snippet units),
+`tests/rag/test_governing.py` (metadata),
+`tests/tools/test_retrieval_tools.py` (inventory lists every era; the
+Romano-shaped regression — terminated-era-only sync — surfaces both the
+contract code and the sync line; supersession note; no-governing message).
+D-028 records the decision and the alternatives rejected.
+
+Eval-expectation audit (was anything relying on the wrong scoping?): yes,
+softly — the suite generator resolves rate questions against the *current*
+era only, and 7 of 16 committed `contract_terms` rate questions anchor
+multi-era artists with divergent per-era rates. All 7 stay valid (current
+era always has the asked rate; single-number answer contract; grading
+normalizes "2E+1"-style strings), the committed suite is byte-pinned, and
+the composite baseline + gate key on `suite_hash` — so suite and generator
+stay frozen this PR. The divergence guard and `_pct_str` fix are specified
+in D-028/D-029 for the next deliberate regeneration + re-baseline.
+
+**2. Scientific notation in rendered contracts** ("1E+1% of Net Receipts",
+"3E+1%"). `Decimal.normalize()` after ×100 turns exactly the whole-ten
+percentages into E-notation; three surfaces shared the idiom. Fixed with
+normalize-then-`:f` in `datagen/pdfrender._pct` and `backline/tools/calc._pct`
+(the eval generator's copy is deliberately frozen with the committed suite,
+see above). Rendered corpus regenerated: 171 contracts / 342 files change;
+**all 17 table hashes unchanged** including `truth.expected_ledger` — money
+truth is bit-identical, confirming the bug was display-only. Golden
+fingerprint regenerated deliberately (`313a2fbc…` → `33b4e62e…`). Guarded by
+a corpus-wide no-scientific-notation scan. **Operator: run
+`make seed && make embed` after pulling** — on-disk corpus and chunk store
+must catch up with the renderer (embed reconciles by content hash; only the
+changed clauses re-embed). D-029 records it.
+
+**3. Log-only observations — no fixes in this pass.**
+
+- **Reconciler iteration waste**: runs show repeated failed `sql_query`
+  attempts and occasional `information_schema` probes (correctly denied by
+  the allowlist) before landing a working query. Costs iterations/tokens,
+  not correctness. Candidate for a later prompt pass (surface the schema
+  shape earlier, or lean on `recall_notes`), not worth a mid-verification
+  prompt-hash move.
+- **Ambiguity resolved silently**: "Reconcile 2026-04 for Meridian" resolved
+  toward artist Hugo Meridian without asking, though a distributor reading
+  exists in the request space. Right answer this time, wrong process — a
+  clarify-question (or an explicit "resolved Meridian → Hugo Meridian,
+  say if you meant otherwise" line) is the candidate behavior for a later
+  prompt/routing pass.
+- **Citation-chip Playwright race**: still open, unchanged from the prior
+  follow-up.
+
+**Verification environment note.** Reproductions ran against a local
+pg16+pgvector with the seeded world and the offline stack (hash embedder +
+lexical reranker — model downloads are blocked in the sandbox). The live
+run's bge ranking was therefore not reproduced bit-for-bit; the fix is
+deliberately ranking-independent (inventory + snippet windows are
+structural), so the guarantee does not depend on which leg ranked what.
+
+Suite state: full pytest green locally against Postgres (523 passed), ruff
+and mypy --strict clean. One PR, no Phase 7 work.
