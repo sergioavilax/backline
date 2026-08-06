@@ -9,6 +9,10 @@ RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 ENV NEXT_TELEMETRY_DISABLED=1
+# Where the *browser* reaches the API — baked at build time (NEXT_PUBLIC_*).
+# The compose default publishes the API on the host at :8000.
+ARG NEXT_PUBLIC_API_URL=http://localhost:8000
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN pnpm build

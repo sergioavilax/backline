@@ -38,6 +38,14 @@ class SessionMemory:
     def add(self, message: Message) -> None:
         self._messages.append(message)
 
+    def note_elided(self, count: int) -> None:
+        """Record messages elided *before* they reached this window (Phase 6: the API
+        rebuilds sessions from a SQL ``LIMIT`` — history past the window never loads,
+        but the context header must still say so honestly)."""
+        if count < 0:
+            raise ValueError("count must be >= 0")
+        self._elided += count
+
     async def context(self) -> list[Message]:
         """The window-bounded conversation: [summary?] + the most recent messages."""
         await self._compact()

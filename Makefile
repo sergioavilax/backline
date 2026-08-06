@@ -1,6 +1,6 @@
 # Backline — developer entry points. `make help` lists targets.
 .DEFAULT_GOAL := help
-.PHONY: help up down logs ps test lint typecheck fmt doctor seed emit-period embed retrieval-probe eval-smoke eval-suite corpus-tokens
+.PHONY: help up down logs ps test lint typecheck fmt doctor seed emit-period embed retrieval-probe eval-smoke eval-suite corpus-tokens api dev-ui e2e openapi
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -55,3 +55,15 @@ eval-smoke: ## Keyless MockProvider eval plumbing test (seeds --if-empty; gates 
 
 eval-suite: ## Regenerate evals/suites/core.json from the answer key (--check in CI)
 	uv run python -m evals generate
+
+api: ## Run the API locally (uvicorn, reload) against DATABASE_URL
+	uv run uvicorn backline.api.main:app --port 8000 --reload
+
+dev-ui: ## Run the Next.js dev server (expects the API on :8000)
+	cd ui && pnpm dev
+
+e2e: ## Playwright smoke against an already-running stack (API :8000 + UI :3000)
+	cd ui && pnpm exec playwright test
+
+openapi: ## Regenerate the committed OpenAPI schema (docs/api/openapi.json)
+	uv run python scripts/export_openapi.py

@@ -549,3 +549,20 @@ async def test_trace_attrs_ride_into_run_meta() -> None:
     await runtime.run(_agent(trace_attrs={"prompt_sha256": "abc123def456"}), "hello")
     assert sink.runs[0].meta["prompt_sha256"] == "abc123def456"
     assert sink.runs[0].meta["model"] == "mock-sonnet"
+
+
+async def test_pre_assigned_run_id_is_used() -> None:
+    """Phase 6: the API announces the run id over SSE before the run starts."""
+    import uuid
+
+    provider = MockProvider([MockTurn(text="done")])
+    sink = InMemorySink()
+    runtime = AgentRuntime(
+        providers={"mock": provider},
+        registry=ModelRegistry.load(),
+        tracer=Tracer([sink]),
+    )
+    assigned = uuid.uuid4()
+    result = await runtime.run(_agent(), "go", run_id=assigned)
+    assert result.run_id == assigned
+    assert [r.id for r in sink.runs] == [assigned]

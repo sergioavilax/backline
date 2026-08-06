@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Sequence
 
 from backline.core.memory import SessionMemory, WorkingMemory
@@ -92,3 +93,21 @@ def test_working_memory_records_entries_for_inspection() -> None:
     working.record("a", "x")
     working.record("b", "y")
     assert [e.tool for e in working.entries] == ["a", "b"]  # dedup hits don't re-append
+
+
+def test_note_elided_reports_pre_window_history() -> None:
+    """Phase 6: the API loads a SQL-bounded window and reports what it dropped."""
+    memory = SessionMemory(window=5)
+    memory.note_elided(12)
+    memory.add(Message(role="user", content="latest question"))
+    context = asyncio.run(memory.context())
+    assert len(context) == 2
+    assert "12 earlier message(s) elided" in context[0].content
+    assert context[1].content == "latest question"
+
+    try:
+        memory.note_elided(-1)
+    except ValueError:
+        pass
+    else:  # pragma: no cover - defensive
+        raise AssertionError("negative elision count must raise")
