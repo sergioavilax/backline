@@ -1249,3 +1249,57 @@ structural), so the guarantee does not depend on which leg ranked what.
 
 Suite state: full pytest green locally against Postgres (523 passed), ruff
 and mypy --strict clean. One PR, no Phase 7 work.
+
+---
+
+## Phase 6 — verification follow-up 2: the chunk-store E-notation report (2026-08-06)
+
+Session prompt: operator report that `rag.contract_chunks` still carried
+"1E+1%" after D-029 (`make seed && make embed` on `33b4e62e…`), with four
+tasks: find the remaining formatter path(s) and consolidate; fix the
+"2% percentage points" escalation wording; move the no-scientific-notation
+guard onto the chunk store; regenerate the golden. No Phase 7 work.
+
+**Diagnosis first (premise correction).** The report hypothesized a second
+clause-text renderer (terms JSON → text). Reproduction on a fresh
+pg16+pgvector disproved it: one renderer feeds PDF, sidecar, and chunks,
+and a genuinely fresh seed+embed at `33b4e62e…` yields a clean store —
+contract 627 §3 reads "(a4) 10% of Net Receipts…", zero E-notation rows
+across all 2,961 chunks. The observed dirt is pre-D-029 rendered text kept
+alive by a **stale corpus copy** (embed mirrors whatever `DATA_DIR` names;
+the compose `/data` volume + `seed --if-empty` + boot-time
+`embed --best-effort` re-dirties the store on every `make up`). Full
+mechanism and operator remedy in D-030.
+
+**Shipped.**
+
+- `pct`/`pct_points` in `backline/royaltycalc/rounding.py` — the one rate
+  formatter (float-rejecting, normalize-then-`:f`); `pdfrender`, the calc
+  tool, and the demo transcript now import it; their private copies are
+  gone. The chunker/catalog/read_clause paths inherit verbatim.
+- Escalation prose renders the bump as bare points: "increase by
+  2 percentage points" (base §3; amendment §A1 equivalent). 163
+  escalator-bearing contracts re-render.
+- Guards moved onto the artifacts agents read: Postgres-gated scan of
+  `rag.contract_chunks` (E-notation + wording typo + non-vacuity floor)
+  after a real seed+embed; keyless chunker-output twin over every rendered
+  contract; committed-suite ratchet pinning the three frozen `"2E+1"`-style
+  expected strings; formatter units beside the money-rounding units.
+- Golden regenerated deliberately: `33b4e62e…` → `f7a0b877…`; **all 17
+  table hashes unchanged** (answer key and canonical terms bit-identical);
+  files diff = exactly 163 contracts × (pdf+txt), inbox untouched.
+
+**Deferred (unchanged from D-028/D-029, now mechanical).** The eval
+generator's `_pct_str` and the committed suite stay byte-frozen —
+`suite_hash` keys the live baseline, so the flip to `pct_points` lands in
+the next deliberate suite regeneration + `ANTHROPIC_API_KEY` re-baseline
+PR. The freeze is enforced by the ratchet test and documented at the
+function.
+
+**Operator action after pulling: `make seed && make embed`.** Compose
+stacks additionally need the `/data` volume re-rendered (D-030 gives the
+one-liner) — host-side seeding never touches it and `--if-empty` skips it.
+
+Suite state: full pytest green against Postgres (532 passed), ruff +
+`mypy --strict` clean, `evals generate --check` reproduces the committed
+suite, `eval-smoke` green. One PR, no Phase 7 work.

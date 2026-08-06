@@ -30,7 +30,7 @@ from backline.agents.router import RouteDecision
 from backline.api.state import jload
 from backline.providers.base import ToolCall, Usage
 from backline.providers.mock import MockProvider, MockTurn
-from backline.royaltycalc import TermsDoc, parse_terms_doc, resolve_terms
+from backline.royaltycalc import TermsDoc, parse_terms_doc, pct, resolve_terms
 from backline.tools.ledger import compute_ledger_slice
 from backline.tools.scan import SEVERITY_BY_KIND, ScanReport, run_scan
 
@@ -169,10 +169,6 @@ async def _counsel_plan(
     terms = resolve_terms(base, active, as_of=as_of)
     base_code = f"FBR-C-{base.contract_id:05d}"
     rates = {(e.revenue_type, e.territory): e.rate for e in terms.rate_card}
-
-    def pct(value: Decimal) -> str:
-        return f"{(value * 100).normalize():f}%"
-
     rate_lines = [
         f"- {rtype} ({terr if terr != 'WW' else 'worldwide'}): {pct(rate)}"
         for (rtype, terr), rate in sorted(rates.items())

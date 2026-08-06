@@ -20,6 +20,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backline.core.runtime import Tool
+from backline.royaltycalc import pct
 from backline.tools.artists import resolve_artist
 from backline.tools.context import ToolContext
 from backline.tools.ledger import compute_ledger_slice, compute_spot_quote
@@ -76,11 +77,6 @@ class CalcRoyaltiesParams(BaseModel):
         if self.rows is not None and not self.rows:
             raise ValueError("rows must be non-empty in spot mode")
         return self
-
-
-def _pct(rate: Decimal) -> str:
-    # :f forbids scientific notation ('0.1' * 100 normalizes to 1E+1 otherwise).
-    return f"{(rate * 100).normalize():f}%"
 
 
 def build_calc_royalties_tool(ctx: ToolContext) -> Tool[CalcRoyaltiesParams]:
@@ -161,12 +157,12 @@ def build_calc_royalties_tool(ctx: ToolContext) -> Tool[CalcRoyaltiesParams]:
             f"Governing base contract: FBR-C-{quote.contract_id:05d} (amendments applied "
             f"as of the date); FX at the {quote.fx_period} fixed rate.",
             f"Escalator state: cumulative gross {quote.cumulative_gross_usd} USD at period "
-            f"start → active bump {_pct(quote.active_bump)}.",
+            f"start → active bump {pct(quote.active_bump)}.",
             "",
         ]
         out.extend(
             f"  {line.revenue_type} {line.territory} {line.amount} {line.currency} → "
-            f"{line.usd_amount} USD x rate {_pct(line.rate)} = {line.royalty} USD"
+            f"{line.usd_amount} USD x rate {pct(line.rate)} = {line.royalty} USD"
             for line in quote.lines
         )
         out.append("")

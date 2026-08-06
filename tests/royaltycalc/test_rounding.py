@@ -2,14 +2,15 @@
 
 Line-level amounts keep 6 decimal places; artist-facing totals round half-even to cents
 at final aggregation only. Both quantizers live in ``backline.royaltycalc.rounding`` and
-nowhere else.
+nowhere else — as does rate display (D-029/D-030): every rendering of a rate as a
+percentage goes through ``pct``/``pct_points``.
 """
 
 from decimal import Decimal
 
 import pytest
 
-from backline.royaltycalc.rounding import CENT, SIX, ZERO, money6, to_cents
+from backline.royaltycalc.rounding import CENT, SIX, ZERO, money6, pct, pct_points, to_cents
 
 
 class TestMoney6:
@@ -67,6 +68,37 @@ class TestToCents:
     def test_negative(self) -> None:
         assert to_cents(Decimal("-0.005")) == Decimal("-0.00")
         assert to_cents(Decimal("-0.015")) == Decimal("-0.02")
+
+
+class TestPctDisplay:
+    def test_whole_tens_never_scientific(self) -> None:
+        # Decimal.normalize() alone renders exactly these as 1E+1 / 2E+1 / ... (D-029).
+        assert pct("0.1") == "10%"
+        assert pct("0.2") == "20%"
+        assert pct("0.3") == "30%"
+        assert pct("0.4") == "40%"
+
+    def test_trailing_zeros_stripped(self) -> None:
+        assert pct(Decimal("0.250")) == "25%"
+        assert pct(Decimal("0.225")) == "22.5%"
+        assert pct("0.03") == "3%"
+
+    def test_boundaries(self) -> None:
+        assert pct(Decimal("0")) == "0%"
+        assert pct(1) == "100%"  # 100 normalizes to 1E+2 without the fixed-point format
+
+    def test_points_form_carries_no_sign(self) -> None:
+        # Escalator prose supplies its own unit: "increase by 2 percentage points" —
+        # pct() here would render the D-030 typo "2% percentage points".
+        assert pct_points("0.02") == "2"
+        assert pct_points(Decimal("0.025")) == "2.5"
+        assert pct_points("0.1") == "10"
+
+    def test_rejects_float(self) -> None:
+        with pytest.raises(TypeError, match="float"):
+            pct(0.1)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="float"):
+            pct_points(0.1)  # type: ignore[arg-type]
 
 
 def test_quantum_constants() -> None:

@@ -69,6 +69,34 @@ async def test_canary_contract_is_chunked_verbatim(embedded: object, pool: async
     assert "SYSTEM OVERRIDE" in rows[0]["content"]
 
 
+async def test_store_renders_rates_plain_after_real_seed_and_embed(
+    embedded: object, pool: asyncpg.Pool
+) -> None:
+    """D-030: assert against the artifact agents actually read — rag.contract_chunks
+    after a real seed + embed — not only the rendered files. A stale corpus re-dirties
+    the store through this very job (that is how "1E+1% of Net Receipts" outlived the
+    D-029 file-level guard), so the store is the surface the guard must hold on."""
+    scientific = await pool.fetch(
+        "SELECT contract_id, clause_no, part FROM rag.contract_chunks "
+        "WHERE content ~ '[0-9]E[+-][0-9]' OR heading ~ '[0-9]E[+-][0-9]' "
+        "ORDER BY contract_id, clause_no, part"
+    )
+    assert not scientific, (
+        f"chunks carry scientific-notation rates (stale corpus? run `make seed && make "
+        f"embed`): {[tuple(r) for r in scientific[:5]]}"
+    )
+    typo = await pool.fetch(
+        "SELECT contract_id, clause_no FROM rag.contract_chunks "
+        "WHERE content ~ '% percentage points' ORDER BY contract_id"
+    )
+    assert not typo, f"escalation typo '…% percentage points' in chunks: {typo[:5]}"
+    # The wording the fix *does* render must actually be in the store (non-vacuous).
+    escalated = await pool.fetchval(
+        "SELECT count(*) FROM rag.contract_chunks WHERE content ~ 'percentage points'"
+    )
+    assert isinstance(escalated, int) and escalated >= 20
+
+
 async def test_second_run_is_a_noop(
     embedded: object, world_env: WorldEnv, pool: asyncpg.Pool
 ) -> None:
