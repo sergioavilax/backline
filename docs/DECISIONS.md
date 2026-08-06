@@ -688,9 +688,11 @@ model naturally led with `ABSTAIN:`. Run 2b9f39fb scored abstention 1/10.
 
 **Decisions.**
 
-- **`_abstained` accepts an `ABSTAIN:` line as the first or last non-empty
-  line** of the final text. Both positions are the typed protocol; an
-  `ABSTAIN:` buried mid-reasoning still is not (guards against "if I could not
+- **`_abstained` accepts the typed abstention in every shape the conflict
+  produces**: an `ABSTAIN:` line opening the reply, closing it, displaced to
+  second-to-last by the contract's mandatory final `ANSWER:` line, or jammed
+  into that line's payload (`ANSWER: ABSTAIN: …`). An `ABSTAIN:` buried
+  mid-reasoning still is not the protocol (guards against "if I could not
   verify I would say ABSTAIN:" false positives).
 - **Agent prompts unchanged** ("first line exactly" remains the instruction);
   the suite is untouched, so `suite_hash 6eef41c6706f309a` results stay
@@ -699,9 +701,15 @@ model naturally led with `ABSTAIN:`. Run 2b9f39fb scored abstention 1/10.
 - The finalizer is shared by platform agents and both baselines
   (`finalize_cited`), so the tolerance applies uniformly across tracks.
 
-**Consequence.** Per-question adjudication of the nine failures
-(position-artifact vs genuinely invented answers) still requires the run's
-trace artifacts; the protocol conflict itself is code-verified either way.
+**Consequence — trace adjudication (run 2b9f39fb `results.jsonl`, all 10
+abstention questions).** All nine failures were protocol artifacts; zero were
+hallucinations. Every failing reply contained an explicit, correct typed
+`ABSTAIN:` — seven displaced it to just above a placeholder final answer line
+(`ANSWER: N/A%`, `ANSWER: $0`, `ANSWER: NO`, `ANSWER: 0`, `ANSWER: N/A`), two
+jammed it into the answer line itself; the one pass (abstention-008) led with
+`ABSTAIN:` on line one. No reply asserted a concrete invented value. A test
+pins the observed shapes verbatim; agent-side behavior on this category needs
+no change.
 
 ## D-019 — Budget gate reads committed spend; projections are loop-scale (eval run 2b9f39fb diagnosis)
 
@@ -712,7 +720,11 @@ scored all 133 questions — the §5.4 "hard stop" never fired. The gate read on
 *landed* cost, updated after a question completes; with concurrency 4 and
 latency spread p50 15s / p95 115s, slow expensive multi_step questions held
 their cost invisibly in flight while the cheap tail sailed through the check
-(the shipped test used concurrency 1, where the race cannot exist). Separately,
+(the shipped test used concurrency 1, where the race cannot exist). The run's
+artifacts confirm it empirically: the seven long reconciler runs ($7.12
+combined, 217-272s each) landed last, and cumulative landed spend first
+exceeded $15 at result 132 of 133 — the landed-only gate could never have
+fired. Separately,
 the pre-run projection said $6.86 where the meter recorded $16.74 at identical
 prices: `_PROJECTION`'s per-agent numbers were single-round-trip guesses, but
 an agent resends its whole growing context every iteration — the projection
@@ -726,10 +738,14 @@ missed the loop, 2.4× under.
   hard-stop notice; a finishing run that overshot prints a warning naming the
   reservation shortfall. Overshoot is now bounded by the in-flight questions'
   projection error instead of unbounded.
-- **`_PROJECTION` constants are whole-loop totals**, recalibrated ~2.4× from
-  run 2b9f39fb's aggregate (counsel 22k/2.8k, analyst 11k/1.8k, reconciler
-  48k/7k, judge 3k/450) — provisional until per-agent means are extracted from
-  the run's per-question artifacts, and marked as such in the comment.
+- **`_PROJECTION` constants are whole-loop totals**, calibrated from the run's
+  per-question costs (judge-subtracted per-agent means → counsel 14k/1.8k,
+  analyst 4.5k/750, reconciler 87k/12.7k, judge 3k/450; suite total $16.90 vs
+  $16.74 metered). The miss was almost entirely the reconciler — real mean
+  $0.45/question vs the $0.0855 single-round-trip guess; the analyst guess was
+  actually high. The reconciler mean is cap-censored (6 of its 22 runs hit the
+  per-run budget cap), so it floors reconciler-heavy projections; per-run caps
+  bound each question's actual spend regardless.
 - **A regression test runs concurrency 4 with a deliberately slow expensive
   question** and asserts the stop trips while its cost is in flight (verified
   failing against the pre-fix gate).
