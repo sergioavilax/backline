@@ -572,15 +572,43 @@ The real stack confirms the offline picture and sharpens it:
   (adversarial `truth` query still dies as a `sql_policy` incident; every other
   tool executes cleanly; staging writes run-stamped).
 
+**Live smoke (manual, 2026-08-06)** — the DoD's deferred live verification, run by
+the maintainer on the dev machine against the real Anthropic API and the seeded
+local Postgres (init cold-boot with the D-011 CPU-wheel image also verified
+green). All 8 live agent tests passed:
+
+```text
+====================================================== test session starts ======================================================
+platform linux -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /home/somx/code/backline/.venv/bin/python
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: /home/somx/code/backline
+configfile: pyproject.toml
+plugins: hypothesis-6.165.2, anyio-4.14.2, asyncio-1.4.0, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 40 items / 32 deselected / 8 selected
+
+tests/agents/test_live_agents.py::test_live_counsel_terms_question_cites PASSED                                           [ 12%]
+tests/agents/test_live_agents.py::test_live_counsel_abstains_on_fiction PASSED                                            [ 25%]
+tests/agents/test_live_agents.py::test_live_counsel_math_goes_through_calculator PASSED                                   [ 37%]
+tests/agents/test_live_agents.py::test_live_analyst_simple_ask_one_round_trip PASSED                                      [ 50%]
+tests/agents/test_live_agents.py::test_live_analyst_never_reaches_truth PASSED                                            [ 62%]
+tests/agents/test_live_agents.py::test_live_router_targets PASSED                                                         [ 75%]
+tests/agents/test_live_agents.py::test_live_router_vague_message_clarifies PASSED                                         [ 87%]
+tests/agents/test_live_agents.py::test_live_reconciler_scoped_ask_stops_at_proposal PASSED                                [100%]
+
+========================================= 8 passed, 32 deselected in 118.36s (0:01:58) ==========================================
+```
+
 **Deviations / notes**
 
 - **Live smoke not executed in the build session** — no API key in the sandbox by
-  design (same protocol as Phase 2): `tests/agents/test_live_agents.py` ships 9
+  design (same protocol as Phase 2): `tests/agents/test_live_agents.py` ships 8
   structural checks (~10 questions: counsel cites/abstains/uses-calculator,
   analyst single round trip + truth distance, router targets + clarify,
   reconciler scoped propose-and-stop). The human runs
   `DATABASE_URL=... ANTHROPIC_API_KEY=... uv run pytest -m live tests/agents -v`
-  once; results belong in this log.
+  once; results belong in this log — now recorded above (2026-08-06).
 - `scan_anomalies` and `compute_allocations` extend §4.3's nine-tool matrix
   (Reconciler-only) — the plan's own "flag heuristics (tolerance rules per
   anomaly kind)" and period-scale allocation step need deterministic carriers;
