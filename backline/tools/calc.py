@@ -79,7 +79,8 @@ class CalcRoyaltiesParams(BaseModel):
 
 
 def _pct(rate: Decimal) -> str:
-    return f"{(rate * 100).normalize()}%"
+    # :f forbids scientific notation ('0.1' * 100 normalizes to 1E+1 otherwise).
+    return f"{(rate * 100).normalize():f}%"
 
 
 def build_calc_royalties_tool(ctx: ToolContext) -> Tool[CalcRoyaltiesParams]:

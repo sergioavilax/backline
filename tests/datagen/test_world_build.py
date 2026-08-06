@@ -8,6 +8,7 @@ the answer key fails here first. Regenerate deliberately with
 """
 
 import json
+import re
 from collections import Counter
 from datetime import date
 from decimal import Decimal
@@ -18,7 +19,7 @@ from datagen.assemble import BuiltWorld
 from datagen.config import WorldConfig
 from datagen.dbload import fx_rows
 from datagen.fingerprint import combined_hash, fingerprint_from_world
-from datagen.pdfrender import contract_document, document_text
+from datagen.pdfrender import _pct, contract_document, document_text
 
 GOLDEN_PATH = Path(__file__).resolve().parents[1] / "golden" / "world_fingerprint.json"
 
@@ -165,6 +166,27 @@ class TestSpecialCases:
             and "2025-08-01" <= c.effective_from.isoformat() <= "2026-05-31"
         ]
         assert len(in_window) >= 20  # plenty of mid-year rate changes for evals
+
+
+class TestRateRendering:
+    def test_pct_never_uses_scientific_notation(self) -> None:
+        # Decimal.normalize() alone renders 10% as '1E+1' — rates must stay plain.
+        assert _pct("0.1") == "10%"
+        assert _pct("0.2") == "20%"
+        assert _pct("0.3") == "30%"
+        assert _pct("0.54") == "54%"
+        assert _pct("0.225") == "22.5%"
+        assert _pct("0.03") == "3%"
+
+    def test_no_rendered_contract_contains_scientific_notation(self, built: BuiltWorld) -> None:
+        pattern = re.compile(r"\dE[+-]\d")
+        for contract in built.world.contracts:
+            text = document_text(
+                contract_document(contract, built.structure, built.structure.config)
+            )
+            assert not pattern.search(text), (
+                f"contract {contract.id} renders a rate in scientific notation"
+            )
 
 
 class TestGolden:

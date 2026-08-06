@@ -50,7 +50,9 @@ def _fmt_date(d: date | None) -> str:
 
 
 def _pct(rate: str) -> str:
-    return f"{(Decimal(rate) * 100).normalize()}%"
+    # :f keeps normalize()'s trailing-zero stripping but forbids scientific notation
+    # (plain Decimal('0.1') * 100 would otherwise render as '1E+1%').
+    return f"{(Decimal(rate) * 100).normalize():f}%"
 
 
 def _money(amount: str) -> str:
