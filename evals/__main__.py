@@ -68,7 +68,9 @@ async def _run_async(args: argparse.Namespace, suite: Suite) -> int:
 
     pool = await asyncpg.create_pool(settings.database_url, min_size=2, max_size=8)
     postgres_sink = PostgresSink(settings.database_url)
-    sinks: list[TraceSink] = [JsonlSink(Path(settings.data_dir) / "traces"), postgres_sink]
+    # data_path/anchoring: artifact + trace paths resolve against the repo root,
+    # never the CWD the CLI happened to be launched from (D-022).
+    sinks: list[TraceSink] = [JsonlSink(settings.data_path / "traces"), postgres_sink]
     try:
         runner = EvalRunner(
             pool=pool,
@@ -96,7 +98,7 @@ async def _run_async(args: argparse.Namespace, suite: Suite) -> int:
             ),
             concurrency=args.concurrency,
             out_dir=Path(args.out),
-            data_dir=Path(settings.data_dir),
+            data_dir=settings.data_path,
             resume_run_id=uuid.UUID(args.resume) if args.resume else None,
             pack_tokens=args.pack_tokens,
         )

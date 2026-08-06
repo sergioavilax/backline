@@ -2,8 +2,31 @@
 
 from decimal import Decimal
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def repo_root() -> Path:
+    """The repository root, located from this file — never from the process CWD.
+
+    Anchors relative data/artifact paths (D-022): eval run ddb797dc's artifacts
+    nested inside an older run's directory because ``data/evals`` resolved against
+    wherever the CLI happened to be launched. Walks up to the ``pyproject.toml``
+    marker; the fallback is the package's parent, which is the root in this repo's
+    layout (deployments that relocate the package must configure absolute paths).
+    """
+    here = Path(__file__).resolve()
+    for candidate in here.parents:
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    return here.parents[1]
+
+
+def anchor_path(path: str | Path) -> Path:
+    """Absolute paths pass through untouched; relative ones anchor at the repo root."""
+    p = Path(path)
+    return p if p.is_absolute() else repo_root() / p
 
 
 class Settings(BaseSettings):
@@ -55,6 +78,12 @@ class Settings(BaseSettings):
     max_iterations: int = 12
     tool_timeout_s: float = 30.0
     max_result_tokens: int = 2000
+
+    @property
+    def data_path(self) -> Path:
+        """``data_dir`` as an absolute path — relative values anchor at the repo
+        root (D-022), absolute ones (compose's ``/data``) are authoritative as-is."""
+        return anchor_path(self.data_dir)
 
 
 @lru_cache
