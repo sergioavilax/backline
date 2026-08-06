@@ -26,9 +26,16 @@ def _fmt_score(value: float | None) -> str:
     return "—" if value is None else f"{value:5.1f}"
 
 
+def _errors(summary: dict[str, Any]) -> dict[str, Any]:
+    """The D-032 quarantine bucket; empty for pre-D-032 summaries."""
+    bucket: dict[str, Any] = summary.get("errors") or {}
+    return bucket
+
+
 def _label(summary: dict[str, Any]) -> str:
     subset = summary.get("subset") or "full"
-    return f"{summary['track']}/{summary['model']} ({subset})"
+    marker = " ‡" if _errors(summary).get("n") else ""
+    return f"{summary['track']}/{summary['model']} ({subset}){marker}"
 
 
 def render_markdown(summary: dict[str, Any]) -> str:
@@ -48,6 +55,19 @@ def render_markdown(summary: dict[str, Any]) -> str:
             if summary.get("judge")
             else ""
         ),
+    ]
+    errors = _errors(summary)
+    errored_by_category: dict[str, int] = errors.get("by_category") or {}
+    if errors.get("n"):
+        breakdown = ", ".join(
+            f"{category} x{count}" for category, count in errored_by_category.items()
+        )
+        lines.append(
+            f"- ‡ {errors['n']} infra-errored question(s) quarantined — excluded from "
+            f"category accuracy ({breakdown}); heal with "
+            f"`--resume {summary['eval_run_id']} --retry-errors` (D-032)"
+        )
+    lines += [
         "",
         "| category | n | score | T1 | T2 | T3 |",
         "|---|---:|---:|---:|---:|---:|",
@@ -58,10 +78,13 @@ def render_markdown(summary: dict[str, Any]) -> str:
     for category in CATEGORIES:
         bucket = categories.get(category)
         if bucket is None:
+            if errored_by_category.get(category):
+                lines.append(f"| {category} ‡ | 0 | — |  |  |  |")
             continue
         tiers = bucket.get("tiers", {})
+        marker = " ‡" if errored_by_category.get(category) else ""
         lines.append(
-            f"| {category} | {bucket['n']} | {bucket['score']:.1f} | "
+            f"| {category}{marker} | {bucket['n']} | {bucket['score']:.1f} | "
             + " | ".join(_fmt_score(tiers.get(tier)) for tier in _TIER_ORDER)
             + " |"
         )
@@ -98,6 +121,12 @@ def render_compare(summaries: list[dict[str, Any]]) -> str:
         weighted = sum(b["score"] * b["n"] for b in summary["categories"].values())
         totals.append(f"**{weighted / n:.1f}**" if n else "—")
     lines.append("| **overall** | " + " | ".join(totals) + " |")
+    if any(_errors(summary).get("n") for summary in summaries):
+        lines.append("")
+        lines.append(
+            "‡ run contains quarantined infra-errored questions — excluded from these "
+            "scores; heal with `--resume <id> --retry-errors` (D-032)"
+        )
     lines.append("")
     lines.append("| run | spend | p50 | p95 | T2 violations |\n|---|---:|---:|---:|---:|")
     for label, summary in zip(labels, summaries, strict=True):

@@ -85,13 +85,39 @@ def _fmt_usd(value: str | None, decimals: int = 2) -> str:
     return f"${float(value):,.{decimals}f}"
 
 
+def _n_errored(doc: dict[str, Any]) -> int:
+    """Quarantined infra errors in the row (D-032); 0 for pre-D-032 documents."""
+    return int((doc.get("errors") or {}).get("n", 0))
+
+
+def _errored_categories(doc: dict[str, Any]) -> dict[str, int]:
+    result: dict[str, int] = (doc.get("errors") or {}).get("by_category") or {}
+    return result
+
+
+def _budget_partial(doc: dict[str, Any]) -> bool:
+    return bool(doc.get("budget_exhausted")) or int(doc["n_scored"]) < int(doc["n_questions"])
+
+
+def _marks(doc: dict[str, Any]) -> str:
+    """† = budget-stopped partial row; ‡ = quarantined infra errors. A row can be both."""
+    marks = ""
+    if not doc.get("complete") and _budget_partial(doc):
+        marks += "†"
+    if _n_errored(doc):
+        marks += "‡"
+    return marks
+
+
 def _scored(doc: dict[str, Any]) -> str:
-    cell = f"{doc['n_scored']}/{doc['n_questions']}"
-    return cell if doc.get("complete") else f"{cell} †"
+    cell = f"{int(doc['n_scored']) - _n_errored(doc)}/{doc['n_questions']}"
+    marks = _marks(doc)
+    return f"{cell} {marks}" if marks else cell
 
 
 def _label(doc: dict[str, Any]) -> str:
-    return str(doc["model"]) + ("" if doc.get("complete") else " †")
+    marks = _marks(doc)
+    return str(doc["model"]) + (f" {marks}" if marks else "")
 
 
 # ── REPORT.md ────────────────────────────────────────────────────────────────────
@@ -139,13 +165,22 @@ def render_report_md(matrix: SweepMatrix, docs: list[dict[str, Any]], pending: l
                 f"| {_scored(doc)} "
                 f"| {_fmt_usd(doc['total_cost_usd'])} |"
             )
-        if any(not doc.get("complete") for doc in docs):
-            lines += [
-                "",
+        footnotes: list[str] = []
+        if any("†" in _marks(doc) for doc in docs):
+            footnotes.append(
                 "† partial run — the budget cap stopped it early; scores cover the "
                 "questions scored so far. Resume with `python benchmarks/run_sweep.py "
-                "--model <id> --resume <eval_run_id>`.",
-            ]
+                "--model <id> --resume <eval_run_id>`."
+            )
+        if any("‡" in _marks(doc) for doc in docs):
+            footnotes.append(
+                "‡ infra-errored questions (provider outage, `run_error`/`harness_error`) "
+                "quarantined — excluded from category accuracy, never scored as model "
+                "failures (D-032). Heal with `python benchmarks/run_sweep.py --model <id> "
+                "--resume <eval_run_id> --retry-errors`."
+            )
+        if footnotes:
+            lines += ["", *footnotes]
         lines.append("")
     if pending:
         for model in pending:
@@ -166,8 +201,9 @@ def render_report_md(matrix: SweepMatrix, docs: list[dict[str, Any]], pending: l
             present = False
             for doc in docs:
                 bucket = doc["categories"].get(category)
-                row.append("—" if bucket is None else f"{bucket['score']:.1f}")
-                present = present or bucket is not None
+                mark = " ‡" if _errored_categories(doc).get(category) else ""
+                row.append("—" + mark if bucket is None else f"{bucket['score']:.1f}{mark}")
+                present = present or bucket is not None or bool(mark)
             if present:
                 lines.append("| " + " | ".join(row) + " |")
         lines += [
@@ -181,6 +217,8 @@ def render_report_md(matrix: SweepMatrix, docs: list[dict[str, Any]], pending: l
             price = doc["price"]
             price_note = f" ({price['note']})" if price["note"] else ""
             tokens = doc["tokens"]
+            errored = _n_errored(doc)
+            errored_note = f" · ‡ {errored} infra-errored (quarantined)" if errored else ""
             lines.append(
                 f"- `{doc['model']}` — eval run `{str(doc['eval_run_id'])[:8]}` · git "
                 f"`{doc.get('git_sha') or '?'}` · {doc['recorded_at']} · "
@@ -189,7 +227,7 @@ def render_report_md(matrix: SweepMatrix, docs: list[dict[str, Any]], pending: l
                 f"{_fmt_usd(doc['total_cost_usd'])} = agent {_fmt_usd(doc['agent_cost_usd'])} "
                 f"+ judge {_fmt_usd(doc['judge_cost_usd'])} · "
                 f"{tokens['input']:,} in / {tokens['output']:,} out tokens · "
-                f"T2 violations {doc['t2_violations']}"
+                f"T2 violations {doc['t2_violations']}{errored_note}"
             )
         lines.append("")
     return "\n".join(lines)

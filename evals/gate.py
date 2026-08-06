@@ -12,6 +12,9 @@ Rules, in order:
 5. Any T2 violation in the results → **fail** (process violations never regress
    quietly — an agent touching ``truth`` or skipping the calculator is not a style
    issue).
+6. Any quarantined infra error in the results → **fail** (D-032): the run is not a
+   complete measurement until ``--resume <id> --retry-errors`` heals it — same
+   footing as a budget-exhausted partial run.
 
 ``evals/results/baseline.json`` holds one entry per (model, track, subset); entries
 are replaced wholesale by ``--write-baseline`` so the file always reflects a real,
@@ -108,6 +111,13 @@ def evaluate_gate(
     violations = int(summary.get("t2_violations", 0))
     if violations > 0:
         reasons.append(f"{violations} T2 violation(s) — process assertions failed")
+
+    errored = int((summary.get("errors") or {}).get("n", 0))
+    if errored > 0:
+        reasons.append(
+            f"{errored} infra-errored question(s) quarantined — provider outages are "
+            f"not measurements; heal the run with --resume <id> --retry-errors first"
+        )
 
     if summary.get("budget_exhausted"):
         reasons.append(

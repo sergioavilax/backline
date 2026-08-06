@@ -112,6 +112,64 @@ def test_partial_rows_carry_the_dagger_and_resume_hint() -> None:
     assert "| category | claude-opus-5 | claude-haiku-4-5 † |" in text
 
 
+def test_errored_rows_carry_the_double_dagger_and_heal_command() -> None:
+    """D-032: an infra-errored row is visibly quarantined — ‡ on the row label, the
+    scored cell, the affected category cells — with the exact heal command in the
+    footnote. The outage never reads as model incapability."""
+    matrix = load_matrix()
+    docs = [
+        _doc("claude-sonnet-5"),
+        _doc(
+            "claude-opus-5",
+            complete=False,
+            categories={
+                "catalog_lookup": {"n": 15, "score": 100.0, "tiers": {"t1": 100.0}},
+                "reconciliation": {"n": 5, "score": 62.0, "tiers": {"t1": 62.0}},
+            },
+            errors={
+                "n": 10,
+                "question_ids": [f"recon-{i:02d}" for i in range(10)],
+                "by_category": {"reconciliation": 10},
+            },
+        ),
+    ]
+    text = render_report_md(matrix, docs, [])
+    assert "| claude-opus-5 ‡ |" in text
+    assert "123/133 ‡" in text  # 133 rows minus 10 quarantined
+    assert "62.0 ‡" in text  # the surviving reconciliation bucket stays marked
+    assert "‡ 10 infra-errored (quarantined)" in text  # row provenance
+    assert "--retry-errors" in text
+    assert "† partial run" not in text  # errored ≠ budget-partial
+
+    # A row can be both budget-stopped and errored; both footnotes render.
+    both = _doc(
+        "claude-haiku-4-5",
+        complete=False,
+        n_scored=97,
+        budget_exhausted=True,
+        errors={"n": 2, "question_ids": ["a", "b"], "by_category": {"abstention": 2}},
+    )
+    text = render_report_md(matrix, [both], [])
+    assert "| claude-haiku-4-5 †‡ |" in text
+    assert "95/133 †‡" in text
+    assert "† partial run" in text and "‡ infra-errored" in text
+
+
+def test_errored_rows_are_excluded_from_the_chart() -> None:
+    docs = [
+        _doc("claude-sonnet-5"),
+        _doc(
+            "claude-opus-5",
+            complete=False,
+            errors={"n": 10, "question_ids": ["q"], "by_category": {"reconciliation": 10}},
+        ),
+    ]
+    svg = render_comparison_svg(docs)
+    assert svg is not None
+    assert "claude-sonnet-5" in svg
+    assert "partial rows excluded: claude-opus-5" in svg
+
+
 def test_local_row_joins_the_table_once_its_results_land() -> None:
     matrix = load_matrix()
     docs = [

@@ -216,6 +216,48 @@ def test_build_results_doc_marks_partials_and_uncapped_rows() -> None:
     assert local["provider"] == "openai_compat"
 
 
+def test_build_results_doc_quarantines_infra_errors() -> None:
+    """D-032: a row carrying quarantined provider-outage questions never reads
+    complete — the outage cannot freeze into the committed artifact — and the
+    errors bucket rides into the document. Pre-D-032 summaries default clean."""
+    registry = ModelRegistry.load()
+    row = SweepRow(model="claude-haiku-4-5", budget_usd=Decimal("9.00"))
+    kwargs: dict[str, Any] = {
+        "registry": registry,
+        "row": row,
+        "suite_name": "core",
+        "settings": get_settings(),
+        "concurrency": 4,
+        "recorded_at": "2026-08-06",
+    }
+    errors = {"n": 3, "question_ids": ["r-1", "r-2", "r-3"], "by_category": {"royalty_math": 3}}
+    contaminated = build_results_doc(_summary(errors=errors), _aggregates(), **kwargs)
+    assert contaminated["complete"] is False
+    assert contaminated["errors"] == errors
+    assert contaminated["budget_exhausted"] is False  # errored ≠ budget-partial
+
+    legacy = build_results_doc(_summary(), _aggregates(), **kwargs)
+    assert legacy["complete"] is True
+    assert legacy["errors"] == {"n": 0, "question_ids": [], "by_category": {}}
+
+
+def test_completed_results_skips_contaminated_rows(tmp_path: Path) -> None:
+    """The sweep's skip-done check must not treat an errored row as done."""
+    registry = ModelRegistry.load()
+    doc = build_results_doc(
+        _summary(errors={"n": 1, "question_ids": ["q"], "by_category": {"royalty_math": 1}}),
+        _aggregates(),
+        registry=registry,
+        row=SweepRow(model="claude-haiku-4-5", budget_usd=Decimal("9.00")),
+        suite_name="core",
+        settings=get_settings(),
+        concurrency=4,
+        recorded_at="2026-08-06",
+    )
+    write_results_doc(tmp_path, doc)
+    assert completed_results(tmp_path, "claude-haiku-4-5", "6eef41c6706f309a") is None
+
+
 def test_overall_score_is_question_weighted() -> None:
     assert overall_score({"a": {"n": 1, "score": 100.0}, "b": {"n": 3, "score": 0.0}}) == 25.0
     assert overall_score({}) == 0.0
@@ -278,3 +320,20 @@ def test_budget_and_resume_require_model() -> None:
         parse_args(["--resume", "00000000-0000-0000-0000-000000000001"])
     with pytest.raises(SystemExit):
         parse_args(["--judge", "claude-sonnet-5", "--no-judge"])
+
+
+def test_retry_errors_needs_model_and_rides_resume() -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--retry-errors"])  # heal one row at a time
+    args = parse_args(
+        [
+            "--model",
+            "claude-opus-5",
+            "--resume",
+            "00000000-0000-0000-0000-000000000001",
+            "--retry-errors",
+        ]
+    )
+    assert args.retry_errors and args.resume is not None
+    # Sweep-state resume (no explicit --resume) is also a legal heal entry point.
+    assert parse_args(["--model", "claude-opus-5", "--retry-errors"]).retry_errors

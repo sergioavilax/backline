@@ -9,6 +9,7 @@ written, state cleared, report generated — are exercised without test-only fla
 in production code, and without a 133-question mock scripting burden."""
 
 import uuid
+from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -89,8 +90,9 @@ def _context(
     matrix: SweepMatrix,
     pg_sink: PostgresSink,
     tmp_path: Path,
+    platform_factory: Callable[[Question], dict[str, Provider]] | None = None,
 ) -> SweepContext:
-    def platform_factory(question: Question) -> dict[str, Provider]:
+    def perfect_platform_factory(question: Question) -> dict[str, Provider]:
         return {"mock": MockProvider(build_platform_script(question))}
 
     def judge_factory(question: Question) -> dict[str, Provider]:
@@ -102,7 +104,7 @@ def _context(
         settings=settings,
         embedder=None,  # resolve from the chunk store's recorded model
         reranker=LexicalReranker(),
-        provider_factory=platform_factory,
+        provider_factory=platform_factory or perfect_platform_factory,
         judge_provider_factory=judge_factory,
         extra_sinks=[pg_sink],  # metrics come from app.runs/app.spans
     )
@@ -238,3 +240,76 @@ async def test_stale_sweep_state_self_heals(
     assert outcome.complete
     assert str(outcome.summary.eval_run_id) != planted
     assert load_state(_state_file(tmp_path)) == {}
+
+
+async def test_infra_errored_row_stays_open_and_retry_errors_heals_it(
+    pool: asyncpg.Pool,
+    settings: Settings,
+    smoke_slice: Suite,
+    pg_sink: PostgresSink,
+    tmp_path: Path,
+) -> None:
+    """The Opus contamination arc end-to-end (D-032): a mid-run provider outage
+    kills two questions; the row's document quarantines them and refuses to read
+    complete (so the sweep won't freeze the outage in), sweep state stays pointed
+    at the run, and a state-resumed --retry-errors pass heals exactly those
+    questions, rewrites the document, and clears state."""
+    row = SweepRow(model="mock-sonnet", budget_usd=Decimal("1.00"))
+    matrix = _matrix(row)
+    dead = {q.id for q in smoke_slice.questions if q.category in {"reconciliation", "multi_step"}}
+    assert len(dead) == 2  # the smoke slice carries one question per category
+
+    def outage_factory(question: Question) -> dict[str, Provider]:
+        if question.id in dead:
+            return {"mock": MockProvider([])}  # the API is down for these
+        return {"mock": MockProvider(build_platform_script(question))}
+
+    ctx = _context(
+        pool, settings, smoke_slice, matrix, pg_sink, tmp_path, platform_factory=outage_factory
+    )
+    first = await run_row(ctx, row, assume_yes=True)
+    assert not first.complete
+    doc = load_results_doc(ctx.results_dir / "mock-sonnet.json")
+    assert doc["complete"] is False
+    assert doc["errors"]["n"] == 2
+    assert doc["errors"]["by_category"] == {"multi_step": 1, "reconciliation": 1}
+    assert doc["runs"]["error"] == 2  # the dead agent runs, from the trace store
+    assert "reconciliation" not in doc["categories"]  # no fake zeros
+    # The errored row keeps its sweep-state entry: the heal resumes from state.
+    state = load_state(_state_file(tmp_path))
+    assert state["mock-sonnet"]["eval_run_id"] == str(first.summary.eval_run_id)
+
+    dead.clear()  # the outage ends
+    healed = await run_row(ctx, row, assume_yes=True, retry_errors=True)
+    assert healed.complete
+    assert healed.summary.eval_run_id == first.summary.eval_run_id
+    healed_doc = load_results_doc(ctx.results_dir / "mock-sonnet.json")
+    assert healed_doc["complete"] is True
+    assert healed_doc["errors"] == {"n": 0, "question_ids": [], "by_category": {}}
+    assert healed_doc["overall_score"] == 100.0
+    assert healed_doc["categories"]["reconciliation"]["score"] == 100.0
+    # The superseded dead runs left the aggregates with their rows.
+    assert healed_doc["runs"] == {"n": 10, "completed": 10, "exhausted": 0, "error": 0}
+    assert load_state(_state_file(tmp_path)) == {}
+
+
+async def test_retry_errors_refuses_a_fresh_row(
+    pool: asyncpg.Pool,
+    settings: Settings,
+    smoke_slice: Suite,
+    pg_sink: PostgresSink,
+    tmp_path: Path,
+) -> None:
+    """A heal must never fall through to a fresh full-price run: no sweep state, no
+    explicit resume id → loud refusal, nothing minted, nothing spent."""
+    row = SweepRow(model="mock-sonnet", budget_usd=Decimal("1.00"))
+    ctx = _context(pool, settings, smoke_slice, _matrix(row), pg_sink, tmp_path)
+    before = await pool.fetchval(
+        "SELECT count(*) FROM app.eval_runs WHERE suite_hash = $1", smoke_slice.suite_hash
+    )
+    with pytest.raises(ValueError, match="needs a run to heal"):
+        await run_row(ctx, row, assume_yes=True, retry_errors=True)
+    after = await pool.fetchval(
+        "SELECT count(*) FROM app.eval_runs WHERE suite_hash = $1", smoke_slice.suite_hash
+    )
+    assert after == before

@@ -123,6 +123,23 @@ def test_gate_fails_on_budget_exhausted_partial_run(tmp_path: Path) -> None:
     assert any("partial run" in reason for reason in result.reasons)
 
 
+def test_gate_fails_on_quarantined_infra_errors(tmp_path: Path) -> None:
+    """D-032: a run carrying quarantined provider-outage questions is not a complete
+    measurement — same footing as a budget-exhausted partial run."""
+    good = _summary()
+    doc = _baseline_doc(good, tmp_path)
+    errored = _summary(
+        errors={"n": 2, "question_ids": ["q-1", "q-2"], "by_category": {"royalty_math": 2}}
+    )
+    result = evaluate_gate(errored, doc)
+    assert not result.passed
+    assert any("infra-errored" in reason for reason in result.reasons)
+    # An explicit empty bucket (a healed run) and a pre-D-032 summary both pass.
+    healed = _summary(errors={"n": 0, "question_ids": [], "by_category": {}})
+    assert evaluate_gate(healed, doc).passed
+    assert evaluate_gate(_summary(), doc).passed
+
+
 def test_gate_notes_improvements(tmp_path: Path) -> None:
     good = _summary()
     doc = _baseline_doc(good, tmp_path)

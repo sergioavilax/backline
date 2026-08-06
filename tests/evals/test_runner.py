@@ -367,6 +367,182 @@ async def test_harness_error_recorded_not_fatal(pool: asyncpg.Pool, tmp_path: Pa
     assert detail.get("failure") in {"run_error", "harness_error"}
 
 
+# ── infra-error quarantine + --retry-errors (D-032) ──────────────────────────
+
+
+async def test_retry_errors_heals_infra_errored_rows_and_recomputes_summary(
+    pool: asyncpg.Pool, tmp_path: Path
+) -> None:
+    """The Opus mid-run outage in miniature: a provider dies on one question, the
+    question is quarantined — visible in the errors bucket, excluded from category
+    accuracy — and a --retry-errors resume supersedes exactly those rows and
+    re-executes them inside the same eval run."""
+    suite, scripts = await _mini_suite(pool)
+    scripts["mini-money-01"] = []  # provider outage: ProviderError → run status "error"
+    runner = _runner(pool, scripts)
+    first = await runner.run(_config(suite, tmp_path))
+
+    assert first.n_scored == 3  # the errored question has rows…
+    assert first.errors == {
+        "n": 1,
+        "question_ids": ["mini-money-01"],
+        "by_category": {"royalty_math": 1},
+    }
+    assert "royalty_math" not in first.categories  # …but is no measurement
+    assert first.categories["abstention"]["score"] == 100.0
+    assert first.categories["catalog_lookup"]["score"] == 100.0
+    # The dead run's failed trace assertions must not read as process violations.
+    assert first.t2_violations == 0
+    row = await pool.fetchrow(
+        "SELECT detail FROM app.eval_results "
+        "WHERE eval_run_id = $1 AND question_id = 'mini-money-01' AND tier = 't1'",
+        first.eval_run_id,
+    )
+    assert row is not None
+    assert json.loads(row["detail"])["failure"] in {"run_error", "harness_error"}
+
+    clean_row_ids = {
+        r["id"]
+        for r in await pool.fetch(
+            "SELECT id FROM app.eval_results "
+            "WHERE eval_run_id = $1 AND question_id != 'mini-money-01'",
+            first.eval_run_id,
+        )
+    }
+
+    # The heal pass: provider recovered (fresh perfect scripts), same eval run.
+    suite2, scripts2 = await _mini_suite(pool)
+    healed = await _runner(pool, scripts2).run(
+        _config(suite2, tmp_path, resume_run_id=first.eval_run_id, retry_errors=True)
+    )
+    assert healed.eval_run_id == first.eval_run_id
+    assert healed.errors == {"n": 0, "question_ids": [], "by_category": {}}
+    assert healed.n_scored == 3
+    assert healed.categories["royalty_math"]["score"] == 100.0
+    assert healed.categories["abstention"]["score"] == 100.0
+
+    # Superseded, not appended: one row per (question, tier), and the
+    # legitimately-scored rows are the *same rows* (primary keys), not rewrites.
+    rows = await pool.fetch(
+        "SELECT id, question_id, tier FROM app.eval_results WHERE eval_run_id = $1",
+        first.eval_run_id,
+    )
+    keys = [(r["question_id"], r["tier"]) for r in rows]
+    assert len(keys) == len(set(keys))
+    assert clean_row_ids <= {r["id"] for r in rows}
+
+    # The artifact mirrors the healed state: one line per question, money healed.
+    lines = [
+        json.loads(line) for line in (healed.out_dir / "results.jsonl").read_text().splitlines()
+    ]
+    assert sorted(line["question_id"] for line in lines) == [
+        "mini-abstain-01",
+        "mini-money-01",
+        "mini-sql-01",
+    ]
+    money_line = next(line for line in lines if line["question_id"] == "mini-money-01")
+    assert money_line["score"] == 1.0
+    summary_doc = json.loads((healed.out_dir / "summary.json").read_text())
+    assert summary_doc["errors"]["n"] == 0
+
+
+async def test_retry_errors_spares_legitimate_failures(pool: asyncpg.Pool, tmp_path: Path) -> None:
+    """Only infra failures re-run. A wrong answer and an iteration-capped run are
+    model behavior — the retry pass must leave their rows byte-untouched."""
+    suite, scripts = await _mini_suite(pool)
+    scripts["mini-money-01"] = []  # infra: run_error
+    scripts["mini-sql-01"] = [MockTurn(text="From memory, 999.\nANSWER: 999")]  # legit wrong
+    scripts["mini-abstain-01"] = [  # legit run_exhausted: tool-calls past the cap
+        MockTurn(
+            tool_calls=[
+                ToolCall(
+                    id=f"s{i}",
+                    name="search_contracts",
+                    arguments={"query": "royalty rate", "artist": "Vera Nyx"},
+                )
+            ]
+        )
+        for i in range(14)
+    ]
+    first = await _runner(pool, scripts).run(_config(suite, tmp_path))
+    assert first.errors["question_ids"] == ["mini-money-01"]  # exhausted ≠ infra
+    assert first.categories["abstention"]["score"] == 0.0
+    assert first.categories["catalog_lookup"]["score"] == 0.0
+    exhausted_row = await pool.fetchrow(
+        "SELECT id, detail FROM app.eval_results "
+        "WHERE eval_run_id = $1 AND question_id = 'mini-abstain-01' AND tier = 't1'",
+        first.eval_run_id,
+    )
+    assert exhausted_row is not None
+    assert json.loads(exhausted_row["detail"])["failure"] == "run_exhausted"
+    legit_ids = {
+        r["id"]
+        for r in await pool.fetch(
+            "SELECT id FROM app.eval_results "
+            "WHERE eval_run_id = $1 AND question_id != 'mini-money-01'",
+            first.eval_run_id,
+        )
+    }
+
+    suite2, scripts2 = await _mini_suite(pool)  # all-perfect scripts this time
+    healed = await _runner(pool, scripts2).run(
+        _config(suite2, tmp_path, resume_run_id=first.eval_run_id, retry_errors=True)
+    )
+    assert healed.errors["n"] == 0
+    assert healed.categories["royalty_math"]["score"] == 100.0  # healed
+    assert healed.categories["catalog_lookup"]["score"] == 0.0  # still the model's miss
+    assert healed.categories["abstention"]["score"] == 0.0  # still the model's cap-out
+    after_ids = {
+        r["id"]
+        for r in await pool.fetch(
+            "SELECT id FROM app.eval_results "
+            "WHERE eval_run_id = $1 AND question_id != 'mini-money-01'",
+            first.eval_run_id,
+        )
+    }
+    assert after_ids == legit_ids
+
+
+async def test_retry_errors_requires_a_resume_run(pool: asyncpg.Pool, tmp_path: Path) -> None:
+    suite, scripts = await _mini_suite(pool)
+    with pytest.raises(ValueError, match="retry_errors needs a run to heal"):
+        await _runner(pool, scripts).run(_config(suite, tmp_path, retry_errors=True))
+
+
+async def test_retry_errors_scoped_by_the_categories_filter(
+    pool: asyncpg.Pool, tmp_path: Path
+) -> None:
+    """A filtered heal supersedes only rows it will re-execute. Errored rows outside
+    the filter keep their rows — still quarantined under their real category, never
+    deleted-and-orphaned."""
+    suite, scripts = await _mini_suite(pool)
+    scripts["mini-money-01"] = []
+    scripts["mini-sql-01"] = []
+    first = await _runner(pool, scripts).run(_config(suite, tmp_path))
+    assert first.errors["n"] == 2
+
+    suite2, scripts2 = await _mini_suite(pool)
+    healed = await _runner(pool, scripts2).run(
+        _config(
+            suite2,
+            tmp_path,
+            resume_run_id=first.eval_run_id,
+            retry_errors=True,
+            categories=("catalog_lookup",),
+        )
+    )
+    assert healed.categories["catalog_lookup"]["score"] == 100.0  # in-filter: healed
+    # Out-of-filter: rows intact, still quarantined, category resolved suite-wide.
+    assert healed.errors["question_ids"] == ["mini-money-01"]
+    assert healed.errors["by_category"] == {"royalty_math": 1}
+    money_rows = await pool.fetch(
+        "SELECT tier FROM app.eval_results "
+        "WHERE eval_run_id = $1 AND question_id = 'mini-money-01'",
+        first.eval_run_id,
+    )
+    assert money_rows  # not deleted by the out-of-scope heal
+
+
 # ── baseline tracks through the same runner ──────────────────────────────────
 
 
