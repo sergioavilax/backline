@@ -137,6 +137,45 @@ def test_finalize_cited_abstention_positions() -> None:
     assert empty.abstained is False
 
 
+def test_finalize_cited_abstention_run_2b9f39fb_shapes() -> None:
+    """The shapes the first live eval actually produced (9/9 failing abstentions):
+    the ABSTAIN line displaced to second-to-last by the contract's mandatory final
+    ANSWER placeholder line, or jammed into the ANSWER line's payload. Every one
+    is a typed abstention; none invented a value."""
+    displaced = finalize_cited(
+        'No artist named "Vera Nyx" exists on the roster — the search tool '
+        "returned no matches.\n\n"
+        'ABSTAIN: No artist named "Vera Nyx" found on the roster.\n\n'
+        "ANSWER: N/A%"
+    )
+    assert displaced.abstained is True
+
+    displaced_money = finalize_cited(
+        'No results correspond to an artist named "Moss Delaney".\n\n'
+        'ABSTAIN: No artist named "Moss Delaney" found on the roster.\n\n'
+        "ANSWER: $0"
+    )
+    assert displaced_money.abstained is True
+
+    displaced_after_sql = finalize_cited(
+        'No artist named "Halcyon Drift" exists in the catalog.\n\n'
+        "```sql\nSELECT count(*) FROM label.tracks;\n```\n\n"
+        'ABSTAIN: No artist named "Halcyon Drift" found in label.artists.\n\n'
+        "ANSWER: 0"
+    )
+    assert displaced_after_sql.abstained is True
+
+    jammed = finalize_cited(
+        "FBR-C-00502 has no §9 — the contract only contains §1 through §8.\n\n"
+        "ANSWER: ABSTAIN: FBR-C-00502 has no §9 (clauses run §1 through §8)."
+    )
+    assert jammed.abstained is True
+
+    # A real answer above a final ANSWER line stays a real answer.
+    answered = finalize_cited("The rate is 22% under FBR-C-00503 §3.\n\nANSWER: 22%")
+    assert answered.abstained is False
+
+
 def test_finalize_reconciler_parses_wrap_up() -> None:
     final = finalize_reconciler(
         "Reconciled kinetic 2026-07.\nBATCH: 17\nFLAGS: 4 (error: 2, warning: 2)\n"
