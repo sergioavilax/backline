@@ -53,19 +53,20 @@ ProviderFactory = Callable[[Question], Mapping[str, Provider]]
 
 # Per-question token estimates for the §5.4 pre-run projection and the in-flight
 # budget reservations. These are whole-loop totals, not one request: an agent resends
-# its entire growing context every iteration, so input ≈ Σ per-iteration context over
-# 3-5 iterations (counsel/analyst) or 10-24 (reconciler workflows) — the original
-# single-round-trip guesses (counsel 9000/1200, analyst 5000/900, reconciler
-# 16000/2500, judge 2500/400) projected $6.86 for the full suite where run 2b9f39fb's
-# meter recorded $16.74 at identical per-token prices, a 2.4x undershoot. The guard
-# needs an order-of-magnitude forecast, not an invoice — but the magnitude must be
-# the loop's, and it feeds the hard stop's reservations, so low biases the gate open.
-# The per-agent split below is provisional (aggregate-calibrated); refine it from the
-# run's per-question cost_usd by agent when extracting artifacts (D-019).
+# its entire growing context every iteration, so input ≈ Σ per-iteration context —
+# the original single-round-trip guesses (counsel 9000/1200, analyst 5000/900,
+# reconciler 16000/2500, judge 2500/400) projected $6.86 for the full suite where run
+# 2b9f39fb's meter recorded $16.74 at identical per-token prices, a 2.4x undershoot
+# that was almost entirely the reconciler (real mean $0.45/question vs $0.0855
+# guessed). Calibrated from that run's per-question costs: judge-subtracted per-agent
+# means, converted to tokens at the run's 3/15 metering (suite total at these numbers:
+# $16.90 vs $16.74 metered). The reconciler mean is cap-censored — 6 of its 22 runs
+# hit the per-run budget cap — so it floors reconciler-heavy projections; per-run
+# caps bound each question's actual spend regardless (D-019).
 _PROJECTION: dict[str, tuple[int, int]] = {
-    "counsel": (22_000, 2_800),
-    "analyst": (11_000, 1_800),
-    "reconciler": (48_000, 7_000),
+    "counsel": (14_000, 1_800),
+    "analyst": (4_500, 750),
+    "reconciler": (87_000, 12_700),
     "b0": (0, 800),  # + pack budget, added at projection time
     "b1": (4_500, 800),
     "judge": (3_000, 450),
