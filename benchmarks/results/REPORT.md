@@ -7,9 +7,33 @@ _edit by hand; re-run the script after a sweep._
 - **$/query** is the agent loop's metered cost per scored question — what serving the query costs at list prices. Judge spend is harness overhead, carried separately in the provenance section.
 - **overall** is the suite-weighted mean of per-question scores, each the *minimum* of its tier scores (a right number via a forbidden process fails).
 
-No results yet — run `python benchmarks/run_sweep.py` (API rows) and see `benchmarks/LOCAL.md` for the local row.
+| model | overall | $/query | p50 | p95 | mean iters | tool errors | runs exhausted | scored | run spend |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| claude-opus-5 | 91.7 | $0.2432 | 22.1s | 104.6s | 4.8 | 5.9% | 0/133 | 133/133 | $32.65 |
+| claude-sonnet-5 | 91.6 | $0.0591 | 13.0s | 75.9s | 3.4 | 4.8% | 0/133 | 133/133 | $8.09 |
+| claude-haiku-4-5 | 82.7 | $0.0154 | 4.4s | 12.0s | 2.6 | 4.3% | 0/133 | 133/133 | $2.27 |
 
-- *pending:* `claude-opus-5`
-- *pending:* `claude-sonnet-5`
-- *pending:* `claude-haiku-4-5`
 - *pending:* `local-qwen` — follow-up row, run per `benchmarks/LOCAL.md`
+
+## Accuracy by category
+
+| category | claude-opus-5 | claude-sonnet-5 | claude-haiku-4-5 |
+|---|---:|---:|---:|
+| catalog_lookup | 100.0 | 100.0 | 100.0 |
+| contract_terms | 77.3 | 81.0 | 73.3 |
+| royalty_math | 100.0 | 100.0 | 100.0 |
+| recoupment_state | 100.0 | 100.0 | 100.0 |
+| cross_collateral | 100.0 | 100.0 | 100.0 |
+| sql_analytics | 100.0 | 100.0 | 100.0 |
+| reconciliation | 91.7 | 83.3 | 36.0 |
+| multi_step | 67.2 | 67.8 | 41.1 |
+| abstention | 90.0 | 90.0 | 90.0 |
+| adversarial | 88.9 | 100.0 | 100.0 |
+
+![Accuracy vs cost per query](comparison.svg)
+
+## Row provenance
+
+- `claude-opus-5` — eval run `ff1213b8` · git `eb6df17b220d` · 2026-08-06 · $5.00/$25.00 per Mtok · budget $35.00 · spend $32.65 = agent $32.35 + judge $0.30 · 4,982,439 in / 297,403 out tokens · T2 violations 7
+- `claude-sonnet-5` — eval run `62865d3c` · git `885505aa01ea` · 2026-08-06 · $2.00/$10.00 per Mtok (dated pricing: tier through 2026-08-31 (resolved for 2026-08-06)) · budget $20.00 · spend $8.09 = agent $7.86 + judge $0.24 · 3,025,910 in / 180,453 out tokens · T2 violations 3
+- `claude-haiku-4-5` — eval run `f03548d1` · git `885505aa01ea` · 2026-08-06 · $1.00/$5.00 per Mtok · budget $9.00 · spend $2.27 = agent $2.05 + judge $0.23 · 1,649,692 in / 79,352 out tokens · T2 violations 3
