@@ -45,6 +45,12 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen
       - run: uv run pytest -v
+      # royaltycalc is the most load-bearing module in the repo; Phase 1's DoD pins
+      # its branch coverage at >= 95% (it ships at 100%).
+      - name: royaltycalc branch-coverage gate
+        run: >-
+          uv run pytest tests/royaltycalc -q --cov=backline.royaltycalc
+          --cov-branch --cov-fail-under=95
 
   ui:
     name: ui lint + build

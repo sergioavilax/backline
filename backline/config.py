@@ -10,6 +10,7 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql://backline:backline@localhost:5432/backline"
     world_seed: int = 20260805
+    data_dir: str = "data"  # contracts, inbox drops, traces; /data inside compose
 
     anthropic_api_key: str = ""
     openai_compat_base_url: str = ""
