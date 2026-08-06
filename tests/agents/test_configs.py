@@ -1,5 +1,6 @@
 """Agent assembly (keyless): tool sets, model policy, finalizers, trace pinning."""
 
+from decimal import Decimal
 from typing import cast
 
 import asyncpg
@@ -78,13 +79,19 @@ def test_model_policy_and_prompt_pinning() -> None:
 
 def test_reconciler_gets_workflow_headroom() -> None:
     settings = get_settings()
-    counsel = build_agent("counsel", _ctx())
     reconciler = build_agent("reconciler", _ctx())
-    assert counsel.limits.max_iterations == settings.max_iterations
     assert reconciler.limits.max_iterations == settings.max_iterations * 2
-    assert reconciler.limits.run_budget_usd == settings.run_budget_usd * 2
+    # D-020: the workflow budget is empirical, not a multiple of the Q&A knob —
+    # $2.50 exactly under the default $0.50 base, and never below the floor.
+    assert reconciler.limits.run_budget_usd == Decimal("2.50")
+    assert reconciler.limits.run_budget_usd == max(settings.run_budget_usd, Decimal("2.50"))
     assert reconciler.limits.tool_timeout_s >= 120
     assert reconciler.limits.max_result_tokens >= 4000
+    # Counsel/Analyst stay on the settings limits, untouched by the raise.
+    for name in ("counsel", "analyst"):
+        agent = build_agent(name, _ctx())
+        assert agent.limits.max_iterations == settings.max_iterations
+        assert agent.limits.run_budget_usd == settings.run_budget_usd
 
 
 def test_unknown_agent_is_loud() -> None:

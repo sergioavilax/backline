@@ -754,3 +754,50 @@ missed the loop, 2.4× under.
 killing in-flight LLM calls (their tokens are already bought); bounding by
 reservation error is the honest contract, and calibrated projections keep that
 bound tight. Under-projection now biases the gate *closed* earlier, never open.
+
+## D-020 — Per-run budgets are sized empirically; the Reconciler cap is $2.50 (eval run 127c5ad8)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** The post-diagnosis category re-run (run 127c5ad8,
+`--categories abstention,multi_step`, correct D-017 prices) split cleanly:
+abstention scored 100.0 — the D-018 finalizer fix holds — while all six
+Reconciler multi_step questions exhausted again, this time at the *correct*
+$1.00 real-money cap (~$1.00 metered per run, `submitted: 0`, p95 393s). With
+the 1.5× meter error gone, the ambiguity is gone too: the workflow legitimately
+costs more than its budget. That budget was `run_budget_usd × 2` (D-014's
+"workflow headroom") — a proportion guessed in Phase 4, before any live run
+existed. Both live runs show the same censored signature: every exhausted run
+finished the expensive middle of the workflow (ingest → match → scan →
+allocations) and died before `submit_batch`, so the cap converts ~$1.00 of real
+spend per question into a dead run and an empty answer. A cap below the
+workflow's true cost doesn't bound waste — it guarantees it.
+
+**Decisions.**
+
+- **A per-run budget must be sized empirically against the measured cost of
+  the workflow it guards.** The original $1.00 predated any live run;
+  multiplying the Q&A knob was a shape of guess, not a measurement — Counsel's
+  budget says nothing about what an ingest→match→scan→allocate→submit loop
+  costs. A budget ships as a hypothesis only until a live run prices the
+  workflow; after that, the measurement wins.
+- **The Reconciler cap is $2.50.** Censoring bounds the true cost only from
+  below ($1.00+), but every exhausted run lacked only submit + wrap-up, so
+  2.5× the censoring point covers the observed spend plus the bounded
+  remainder with margin. Implemented in `_limits_for` as
+  `max(run_budget_usd, $2.50)` — the env knob can raise the cap above the
+  floor, never shrink it — and iteration headroom stays 2× (iterations were
+  never the binding constraint; budget was). Counsel/Analyst stay on
+  `run_budget_usd` unchanged.
+- The config test pins the split: Reconciler at exactly $2.50 under the
+  default $0.50 base (and never below the floor), Counsel/Analyst at the
+  settings value.
+
+**Consequence.** The cap stops censoring at $1.00, so the D-019 `_PROJECTION`
+reconciler mean (calibrated on capped runs) now under-floors reconciler
+questions that will run to completion — per-question spend may legally reach
+$2.50, and the committed-spend gate still bounds suite overshoot by
+reservation error. The first uncensored run's artifacts are the recalibration
+source, and the check on $2.50 itself. No live run, baseline write, or
+projection recalibration happened with this change; the multi_step re-run
+stays on the operator's list.
