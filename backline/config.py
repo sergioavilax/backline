@@ -19,6 +19,19 @@ class Settings(BaseSettings):
 
     rerank: str = "on"
 
+    # Retrieval stack (§4.4). "hash" selects the deterministic offline embedder
+    # (feature-hashed bag-of-words, 384-dim) used by tests and model-less environments;
+    # "lexical" is the analogous offline reranker. Both real models run CPU-side via
+    # the optional `embed` extra (sentence-transformers).
+    embed_model: str = "BAAI/bge-small-en-v1.5"
+    rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+    # sql_query tool policy knobs (§4.3): auto/max LIMIT and the EXPLAIN cost ceiling
+    # (planner cost units — a full statement_lines aggregate is ~15K; a pathological
+    # self-join is millions).
+    sql_row_limit: int = 200
+    sql_cost_ceiling: float = 150_000.0
+
     # Budgets are money → Decimal, never float (invariant 1). Env values like "0.50"
     # parse exactly.
     run_budget_usd: Decimal = Decimal("0.50")

@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from backline.core.costmeter import CostMeter
 from backline.core.guardrails import Guardrails, Incident, RunLimits, ToolCheck
 from backline.core.memory import SessionMemory, WorkingMemory
+from backline.core.runcontext import current_run_id
 from backline.core.trace import RunHandle, SpanHandle, Tracer
 from backline.providers.base import (
     CompletionRequest,
@@ -177,6 +178,9 @@ class AgentRuntime:
         async with self._tracer.run(
             agent=agent.name, session_id=session_id, meta={"model": agent.model}
         ) as run:
+            # Publish the run id so tool handlers can stamp gated writes
+            # (submitted_by_run / created_by) without widening the handler signature.
+            run_token = current_run_id.set(run.run_id)
             try:
                 for iteration in range(1, agent.limits.max_iterations + 1):
                     budget_incident = guardrails.check_budget(costmeter.total_usd)
@@ -221,6 +225,8 @@ class AgentRuntime:
             except ProviderError as exc:
                 status = "error"
                 run.meta.setdefault("error", str(exc))
+            finally:
+                current_run_id.reset(run_token)
             run.set_result(status=status, cost_usd=costmeter.total_usd)
             run_id = run.run_id
 

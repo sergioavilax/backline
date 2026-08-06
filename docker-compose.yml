@@ -25,7 +25,10 @@ services:
       retries: 12
       start_period: 10s
 
-  # One-shot: migrations, then a skip-if-present world seed (Phase 3 adds embed).
+  # One-shot: migrations → skip-if-present world seed → chunk/embed build.
+  # embed runs --best-effort: without the `embed` extra (or model egress) it still
+  # builds the clause chunks, so search works FTS-only until `make embed` runs with
+  # a real model (see docs/DECISIONS.md D-011).
   init:
     build:
       context: .
@@ -37,6 +40,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_COMPAT_BASE_URL: ${OPENAI_COMPAT_BASE_URL:-}
       RERANK: ${RERANK:-on}
+      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-small-en-v1.5}
       RUN_BUDGET_USD: ${RUN_BUDGET_USD:-0.50}
       EVAL_BUDGET_USD: ${EVAL_BUDGET_USD:-5.00}
     command:
@@ -46,7 +50,7 @@ services:
         "--no-sync",
         "sh",
         "-c",
-        "python -m backline.db.migrate && python -m datagen seed --if-empty",
+        "python -m backline.db.migrate && python -m datagen seed --if-empty && python -m backline.rag.embed --best-effort",
       ]
     volumes:
       - appdata:/data
