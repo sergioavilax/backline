@@ -102,6 +102,111 @@ state each rule in their clauses, so Counsel can retrieve them):
 
 ---
 
+## D-007 — Provider layer: official SDK for Anthropic, httpx for OpenAI-compat (Phase 2)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** BUILD_PLAN §4.1 requires an `AnthropicProvider` (Messages API tool use,
+streaming, retries with jittered backoff on 429/529, `anthropic-version` pinning) and an
+`OpenAICompatProvider` for any OpenAI-format endpoint, both normalizing to one internal
+wire shape.
+
+**Decisions.**
+
+- **AnthropicProvider is built on the official `anthropic` SDK** (`AsyncAnthropic`),
+  not hand-rolled HTTP. The SDK pins `anthropic-version`, retries 408/409/429/5xx/529
+  and connection errors with jittered exponential backoff (`max_retries=4` here), and —
+  because the provider always streams and accumulates via `get_final_message()` —
+  assembles partial `input_json_delta` tool-argument fragments (the §9 pitfall).
+  Hand-rolling those three would mean re-testing solved problems. The provider is still
+  fully unit-testable offline: the SDK accepts an injected `http_client`, so tests
+  drive it with `httpx.MockTransport` serving canned SSE (including a tool-use argument
+  split mid-`\u` escape) and assert both the outbound wire shape and the normalization.
+- **OpenAICompatProvider speaks raw httpx** — the endpoint is by definition
+  not Anthropic (vLLM, OpenAI, together), the surface is one POST, and a dependency on
+  the `openai` package would drag a large SDK in for a thin shim. It owns its
+  retry/backoff (429/5xx/transport errors, exponential with jitter). Jitter entropy
+  comes from `secrets`, not `random` — invariant 4's "no bare `random` calls" stays
+  cleanly greppable — and both the sleeper and jitter are injectable so retry tests run
+  in microseconds.
+- **Normalization boundary**: internal `Message`/`ToolCall`/`CompletionResult` types
+  (`providers/base.py`) are the only shapes the runtime sees. Notable mappings:
+  consecutive internal `tool` messages merge into one Anthropic user turn of
+  `tool_result` blocks (parallel calls must be answered in a single message);
+  OpenAI-format tool arguments arrive as JSON *strings* and are parsed here, with
+  unparseable arguments surfaced as a `ProviderError` (local-model tool-JSON mangling is
+  a named Phase 7 risk — better loud than guessed); `stop_reason`/`finish_reason`
+  collapse to five internal values. `temperature` is omit-when-`None` because current
+  Anthropic models reject explicit sampling params.
+- **Registry mediates model → provider**: `config/models.yaml` maps each model id to
+  `{provider, context_window, USD/Mtok in/out}`. Prices are quoted strings parsed to
+  `Decimal`; a bare YAML float fails loading (money is never float). Mock models
+  (`mock-sonnet`, `mock-haiku`) are registered at real-tier prices so keyless tests
+  exercise genuine budget arithmetic.
+
+**Consequences.** Live-API behavior is delegated to a maintained SDK and verified once
+by a human via `pytest -m live` (excluded by default); everything else runs offline.
+The `anthropic` package is a runtime dependency; `httpx` moved from dev to main deps.
+
+---
+
+## D-008 — Trace persistence: insert spans on start, complete on end (Phase 2)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** §4.7 wants spans in Postgres + JSONL + a live feed, with cost/token attrs.
+The first cut inserted `app.spans` rows on span *end* — and the integration test
+failed immediately: children end before their parents, so `spans.parent_id`'s self-FK
+referenced a row that didn't exist yet.
+
+**Decision.** `PostgresSink` inserts the row on `span_start` (`ended_at` NULL) and
+completes it on `span_end`. Parents always *start* before children, so FK order holds
+— and in-flight spans are queryable mid-run, which the Phase 6 Trace Inspector wants
+anyway when re-attaching to a running agent. The JSONL sink stays one durable line per
+event (`run_start`, completed `span_end`s, `run_end`) in a per-run file; the in-proc
+`TracePubSub` carries both start and end events for the future SSE feed. Attrs use
+OTel `gen_ai.*` naming; serialization goes through the repo's one JSON encoder
+(`jsonutil`, now also UUID + ISO datetime), so a Decimal cost is a string in JSONB and
+JSONL, never a JSON float. Run cost lands in `app.runs.cost_usd NUMERIC(12,6)` as
+native Decimal.
+
+**Alternatives rejected**: buffering spans and flushing on run end (loses the trace on
+a crash — precisely when it matters); dropping the FK via a new migration (weakens the
+schema to accommodate a sink bug); deferrable constraints (hides write-order problems
+instead of fixing them).
+
+---
+
+## D-009 — Runtime-loop semantics BUILD_PLAN §4.2 leaves open (Phase 2)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+Judgment calls in `core/runtime.py`, now fixed:
+
+- **Budget trips at iteration boundaries** (the plan's `while ... cost < budget`
+  semantics): the check runs before each LLM call; a run already over budget ends
+  `status=exhausted` with a run-level `guardrail` span. A final answer produced by the
+  call that *crosses* the budget still completes — the cap prevents further spend, it
+  doesn't retract finished work.
+- **Tool failures return to the model, not to the caller**: invalid args (Pydantic),
+  unknown tools, timeouts, and handler exceptions all become `is_error` tool results
+  plus a traced incident/status — the model gets a chance to correct itself within its
+  iteration budget. Only `ProviderError` ends the run (`status=error`); programming
+  errors propagate.
+- **Cost accounting reuses the one rounding policy**: each call's cost is
+  `money6(tokens × price / 1M)` via `royaltycalc.rounding` — API spend is money, so it
+  follows invariant 1 rather than growing a second quantization rule.
+- **Oversize tool results** (est. tokens ≈ chars/4 — same offline convention as
+  datagen's corpus estimate) are summarized by the agent's `utility_model` when
+  configured, else deterministically truncated; either way a `compression` span records
+  method, sizes, and (for the model path) usage + cost, so shrunken context is never a
+  silent lie about what the model saw.
+- **Dedup key is `(tool, content)`**: identical bytes from *different* tools are
+  coincidence, not duplication; repeats become a short pointer to the first result's
+  index.
+
+---
+
 ## D-004 — Recoupment accounts: one row per account, key referenced from terms
 
 **Status**: accepted · **Date**: 2026-08-05
