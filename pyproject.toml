@@ -86,7 +86,7 @@ select = [
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["backline", "datagen", "scripts", "tests", "evals"]
+files = ["backline", "datagen", "scripts", "tests", "evals", "benchmarks"]
 
 [[tool.mypy.overrides]]
 module = "asyncpg.*"

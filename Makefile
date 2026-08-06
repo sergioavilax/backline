@@ -1,6 +1,6 @@
 # Backline — developer entry points. `make help` lists targets.
 .DEFAULT_GOAL := help
-.PHONY: help up down logs ps test lint typecheck fmt doctor seed emit-period embed retrieval-probe eval-smoke eval-suite corpus-tokens api dev-ui e2e openapi
+.PHONY: help up down logs ps test lint typecheck fmt doctor seed emit-period embed retrieval-probe eval-smoke eval-suite corpus-tokens api dev-ui e2e openapi bench-sweep bench-report
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -49,6 +49,12 @@ embed: ## Build clause chunks + embeddings (idempotent; EMBED_MODEL=hash for off
 
 retrieval-probe: ## Measure retrieval quality (recall@k/MRR, rerank on vs off)
 	uv run python -m evals.retrieval_probe
+
+bench-sweep: ## Phase 7 model sweep: API rows per benchmarks/sweep.yaml (needs ANTHROPIC_API_KEY)
+	uv run python benchmarks/run_sweep.py
+
+bench-report: ## Re-render benchmarks/results/REPORT.md + comparison.svg from results JSONs
+	uv run python benchmarks/report.py
 
 eval-smoke: ## Keyless MockProvider eval plumbing test (seeds --if-empty; gates vs baseline)
 	uv run python -m evals smoke

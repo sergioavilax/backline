@@ -1316,3 +1316,69 @@ will skip:
 `docker compose run --rm init uv run --no-sync sh -c "python -m datagen seed && python -m backline.rag.embed --best-effort"`.
 The store-level guard turns the stale-corpus loop from silent into a red
 test on any DB it runs against.
+
+## D-031 — Benchmark sweep methodology: shipped-config rows, pinned judge, agent-only $/query (Phase 7)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** BUILD_PLAN §7 wants the cost/latency/accuracy table across
+frontier + local models. Two genuinely different experiments hide behind that
+sentence: *what happens to the shipped product when the planner model is
+swapped* versus *what is each model capable of with limits tuned to its price*.
+They differ concretely in this repo because run limits are dollars: the
+Reconciler's per-run budget floor is $2.50, sized empirically for sonnet
+(D-020), and at opus prices the same cap buys ≈ 60% of the tokens that already
+cap-censored 6/22 sonnet reconciler runs. Meanwhile the harness itself spends
+money that is not the model's (the T3 judge), and the operator set the
+envelope: API rows first, opus under a hard $35, the local row deferred to a
+separate run per `benchmarks/LOCAL.md`.
+
+**Decisions.**
+
+- **Every row measures the shipped platform with only the planner swapped.**
+  Prompts, tools, retrieval, per-run caps (D-020/D-021), and the utility model
+  (`claude-haiku-4-5`, all rows) stay fixed. This answers the production
+  question the listing actually asks ("cost and latency tradeoffs at
+  production scale") and keeps the opus row inside the operator's $35.
+  The known cost — fixed dollar caps handicap expensive models on workflow
+  categories — is *reported, not corrected for*: every results document
+  carries `runs.exhausted`, and `docs/BENCHMARK_NOTES.md` pre-registers the
+  cap-artifact hypothesis (H1) so a depressed opus workflow score cannot be
+  misread as a capability claim. The rejected alternative (token-normalized
+  per-model caps) measures isolated capability, breaks the budget envelope,
+  and stops describing the product.
+- **One judge for every row.** T3 is `claude-sonnet-5` with the pinned rubric
+  on all rows, local included — vary the agent, never the grader. Consequence
+  accepted and documented in LOCAL.md: the rig run needs the Anthropic key for
+  ≈ $0.35 of judge spend (`--no-judge` exists but marks the row
+  not-score-comparable).
+- **$/query is the agent loop alone.** Production queries are not judged, so
+  judge spend is split out (`agent_cost_usd` from `app.runs` — judge runs are
+  separate `agent='judge'` rows — with `judge_cost_usd` and
+  `usd_per_query_with_judge` carried for bill reproduction). Utility-model
+  compression *is* part of serving a query and stays in.
+- **Resume is two-level and crash-safe.** The sweep pre-mints each row's
+  `app.eval_runs` id and records it in `data/benchmarks/sweep_state.json`
+  *before* the first question, then always enters the runner through its
+  resume path; the runner skips already-scored questions (§5.4). Completed
+  rows clear state and skip on re-invocation (`--fresh` re-measures); stale
+  state (a reset DB) self-heals to a fresh run; an explicit `--resume` id
+  stays a loud error when wrong. Committed artifacts are full-suite only —
+  `--subset` dry passes never write to `benchmarks/results/`.
+- **Budgets are quoted Decimals sized for the calendar.** Row caps live in
+  `benchmarks/sweep.yaml`; a test pins projection ≤ cap on *both* sides of the
+  scheduled sonnet price transition (D-017), so the committed matrix cannot go
+  stale on 2026-09-01. `--budget 0` means **uncapped** and is reserved for the
+  zero-priced local row — passed literally, the runner's
+  `spent + reserved >= budget` stop would skip every question.
+- **The report degrades gracefully to API-only** (§7): missing rows render as
+  pending lines (the local follow-up by name), partial rows carry a dagger and
+  the resume command, and the comparison chart plots complete rows only.
+
+**Consequence.** `python benchmarks/run_sweep.py` is a single unattended
+command for the operator's three API rows (~$45 projected, $64 hard-capped),
+restartable at any point with the same command; the local row is one
+documented command later. Cross-model comparability holds by construction
+(same config, same judge, same suite hash), and any future cap-normalized
+opus re-run is a deliberate second experiment — new budget authorization, new
+DECISIONS entry — not a quiet knob turn.

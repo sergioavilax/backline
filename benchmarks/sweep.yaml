@@ -1,0 +1,30 @@
+# Phase 7 sweep matrix (BUILD_PLAN §7). Operator policy, 2026-08-06: API rows
+# first — claude-opus-5 under a hard $35 budget, then claude-sonnet-5 and
+# claude-haiku-4-5 — with the local OpenAI-compat row (Qwen) run separately per
+# benchmarks/LOCAL.md. `python benchmarks/run_sweep.py` runs `rows` in order;
+# `followups` rows run only when named with --model.
+#
+# Budgets are QUOTED STRINGS so they load as exact Decimals (money is never
+# float — invariant 1). Each budget is that row's whole-run hard cap; the runner
+# refuses to start when its pre-run projection exceeds the cap unless --yes.
+# Projections at 2026-08-06 prices: opus $27.66 · sonnet $11.27 (intro pricing
+# through 2026-08-31, D-017) · haiku $5.80 · local $0.34 (that is the pinned
+# judge's spend — the local model itself is zero-priced).
+suite: core
+track: platform
+# One judge grades every row (D-031): T3 scores stay comparable across models
+# because the grader never changes with the model under test.
+judge_model: claude-sonnet-5
+rows:
+  - model: claude-opus-5
+    budget_usd: "35.00"   # operator hard budget
+  - model: claude-sonnet-5
+    # Sized for the *standard* tier ($16.90 projected from 2026-09-01), not just
+    # the intro tier — a committed cap must not go stale on a scheduled price
+    # transition (D-017); tests pin the projection-fits-budget check on both sides.
+    budget_usd: "20.00"
+  - model: claude-haiku-4-5
+    budget_usd: "9.00"    # extra headroom — cheap models tend to spend iterations
+followups:
+  - model: local-qwen
+    budget_usd: "0"       # zero-priced endpoint; 0 = uncapped at the sweep layer
