@@ -636,3 +636,105 @@ runs behind a secret is a gate nobody has seen fire.
 **Consequence.** Until the first live baseline lands, a live regression is caught
 only by the absolute rules (T2 violations, partial-run refusal) — accepted, and
 visible in the gate output as bootstrap language rather than silent green.
+
+## D-017 — Dated price schedules in the model registry (eval run 2b9f39fb diagnosis)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** `config/models.yaml` carried claude-sonnet-5 at the standing $3/$15
+sticker while Anthropic bills launch-intro $2/$10 through 2026-08-31 (UTC) — the
+file's own comment admitted the discrepancy "so cost numbers stay comparable".
+Run 2b9f39fb metered $16.74 against ~$11.16 actually billed (exactly 1.5×), and
+the overstatement propagated beyond reporting: every per-run budget guardrail
+(`RUN_BUDGET_USD`, checked against the meter each iteration) effectively shrank
+to ⅔ of its real-money intent, squeezing long Reconciler workflows toward
+`exhausted`, and the suite-level budget compared real dollars against inflated
+meter dollars.
+
+**Decisions.**
+
+- **A model may carry a dated `pricing` schedule** instead of flat fields:
+  ordered tiers, each billing through its inclusive UTC `through` date, exactly
+  one open-ended final tier (validated loudly: missing terminal tier, unordered
+  dates, flat+schedule together, float prices all refuse to load).
+- **`ModelRegistry.load(on=...)` resolves the tier for the load date** (default:
+  today, UTC) and records the choice in `ModelInfo.price_note`; the eval runner
+  banner prints the resolved price. The Sept 1 transition happens on the
+  calendar and out loud — no constant edits, no silent flip; tests pin both
+  sides of the boundary.
+- **Mock models stay flat** — deterministic test costs must not move on a
+  calendar day.
+- Comparability across the intro/standard boundary is the *benchmark's* problem
+  (Phase 7 can price a usage log under any tier); the meter's job is to match
+  the invoice.
+
+**Consequence.** A process that stays alive across a tier boundary keeps its
+load-time prices until restarted — acceptable for minutes-long eval runs, and
+the price note makes the applied tier auditable per run.
+
+## D-018 — Typed abstention accepts opening *or* closing position (eval run 2b9f39fb diagnosis)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** The finalizer recognized `ABSTAIN: <reason>` on the first line
+only, while every abstention eval prompt simultaneously imposes the category's
+output contract — "End your reply with a line exactly `ANSWER: …`" (that trap
+is the point of the category, D-015). The agent system prompts say "reply with
+first line exactly `ABSTAIN:`"; the eval prompt says the reply *ends* with an
+answer line. A model resolving that tension by closing with the typed
+abstention was scored `did_not_abstain` on a reply that invented nothing.
+Phase 4's live smoke passed because its prompt carried no format suffix — the
+model naturally led with `ABSTAIN:`. Run 2b9f39fb scored abstention 1/10.
+
+**Decisions.**
+
+- **`_abstained` accepts an `ABSTAIN:` line as the first or last non-empty
+  line** of the final text. Both positions are the typed protocol; an
+  `ABSTAIN:` buried mid-reasoning still is not (guards against "if I could not
+  verify I would say ABSTAIN:" false positives).
+- **Agent prompts unchanged** ("first line exactly" remains the instruction);
+  the suite is untouched, so `suite_hash 6eef41c6706f309a` results stay
+  comparable and the hallucination trap stays armed — an invented
+  `ANSWER: 18%` fails exactly as before.
+- The finalizer is shared by platform agents and both baselines
+  (`finalize_cited`), so the tolerance applies uniformly across tracks.
+
+**Consequence.** Per-question adjudication of the nine failures
+(position-artifact vs genuinely invented answers) still requires the run's
+trace artifacts; the protocol conflict itself is code-verified either way.
+
+## D-019 — Budget gate reads committed spend; projections are loop-scale (eval run 2b9f39fb diagnosis)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** Run 2b9f39fb crossed its $15 budget by its own meter and still
+scored all 133 questions — the §5.4 "hard stop" never fired. The gate read only
+*landed* cost, updated after a question completes; with concurrency 4 and
+latency spread p50 15s / p95 115s, slow expensive multi_step questions held
+their cost invisibly in flight while the cheap tail sailed through the check
+(the shipped test used concurrency 1, where the race cannot exist). Separately,
+the pre-run projection said $6.86 where the meter recorded $16.74 at identical
+prices: `_PROJECTION`'s per-agent numbers were single-round-trip guesses, but
+an agent resends its whole growing context every iteration — the projection
+missed the loop, 2.4× under.
+
+**Decisions.**
+
+- **The gate reads committed spend** — landed cost plus a per-question
+  projected reservation held while each question is in flight
+  (`project_question_cost`, also the §5.4 forecast unit). First skip prints a
+  hard-stop notice; a finishing run that overshot prints a warning naming the
+  reservation shortfall. Overshoot is now bounded by the in-flight questions'
+  projection error instead of unbounded.
+- **`_PROJECTION` constants are whole-loop totals**, recalibrated ~2.4× from
+  run 2b9f39fb's aggregate (counsel 22k/2.8k, analyst 11k/1.8k, reconciler
+  48k/7k, judge 3k/450) — provisional until per-agent means are extracted from
+  the run's per-question artifacts, and marked as such in the comment.
+- **A regression test runs concurrency 4 with a deliberately slow expensive
+  question** and asserts the stop trips while its cost is in flight (verified
+  failing against the pre-fix gate).
+
+**Consequence.** A hard *guarantee* against overshoot is impossible without
+killing in-flight LLM calls (their tokens are already bought); bounding by
+reservation error is the honest contract, and calibrated projections keep that
+bound tight. Under-projection now biases the gate *closed* earlier, never open.
