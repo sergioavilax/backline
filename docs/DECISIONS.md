@@ -1062,3 +1062,45 @@ driven by processes other than the API (CLI harness, eval runner).
 shows live is exactly what persisted, chat answers arrive with their full
 provenance (route decision, run id, cost, citations), and nothing about the
 streaming design depends on which process ran the agent.
+
+## D-027 — Agent-authored JSONB renders verbatim; formatters are the display boundary (Phase 6 verification)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** Phase 6 verification: the Review Queue white-screened on live
+reconciler batches. `submit_batch` accepts allocation `line_detail` and flag
+`payload` as `dict[str, Any]` — deliberately free-form so agents can attach
+whatever evidence fits the anomaly — and live agents write JSON numbers,
+numeric-string ids, `line_ids` lists (scalar sometimes), and object-shaped
+details where the demo scripts write `{source, line_id, statement_id,
+detail}` with money as decimal strings. The UI assumed the demo shapes
+(`money()` called `.trim()`), and the API's evidence resolver raised on a
+non-list `line_ids`. Three candidate fixes: validate/coerce shapes at
+`submit_batch` write time, normalize at API read time, or make rendering
+robust.
+
+**Decision.** Rendering robustness, at every layer that touches pass-through
+JSONB:
+
+- **Canonical money stays the typed columns** (`net_payable NUMERIC(18,6)`,
+  batch totals) — Decimal end to end, serialized as strings (invariant 1).
+  The JSONB is the agent's *evidence*, not the payable record; nothing
+  computes from it.
+- **Write-time coercion rejected**: a schema straitjacket on `payload` would
+  fight the Reconciler prompt's "include line ids and measurements"
+  (evidence shapes are anomaly-specific), and it cannot fix batches already
+  sitting in staging.
+- **Read-time rewriting rejected**: reviewers judge the agent's work, so the
+  record must be served verbatim — normalizing on the way out would
+  misreport what the agent actually wrote.
+- So UI formatters accept `unknown` (numbers stringify for display only,
+  non-decimal garbage renders inert as text, absent → "—"), flag cards
+  render every observed payload shape including unknown measurement keys,
+  and the API evidence resolver reads id spellings liberally (int, numeric
+  string, scalar-or-list `line_ids`) while never raising on the rest.
+
+**Consequence.** Any batch an agent can submit, a human can review: real and
+demo batches render alike, pinned by the Playwright fixture spec
+(`ui/tests/review-real-shape.spec.ts`) and the API shape test. The cost is
+honest: a malformed amount shows as its raw text rather than pretending to
+be money.

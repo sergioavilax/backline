@@ -22,6 +22,49 @@ import {
 
 type StatusFilter = "proposed" | "all";
 
+/** Flag payloads are agent-authored JSONB, served verbatim — live agents shape them
+ *  freely (demo scripts always wrote {source, line_id, statement_id, detail}).
+ *  Rendering tolerates every shape: numeric-string ids, line_ids lists, object
+ *  details, missing or null anything. */
+
+const cell = (value: unknown): string =>
+  value === null || value === undefined || value === "" ? "—" : String(value);
+
+/** One-line text for an arbitrary payload value; "" for null/undefined. */
+function describe(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+/** "label:4021" / "staged:88101 +2" from line_id and/or line_ids, if any. */
+function lineRef(payload: Record<string, unknown>): string | null {
+  const raw = payload["line_ids"];
+  const ids = [payload["line_id"], ...(Array.isArray(raw) ? raw : [raw])].filter(
+    (v): v is number | string =>
+      typeof v === "number" || (typeof v === "string" && /^\d+$/.test(v)),
+  );
+  if (ids.length === 0) return null;
+  const source = payload["source"] === "staged" ? "staged" : "label";
+  return `${source}:${ids[0]}${ids.length > 1 ? ` +${ids.length - 1}` : ""}`;
+}
+
+const SHOWN_PAYLOAD_KEYS = new Set(["source", "line_id", "line_ids", "statement_id", "detail"]);
+
+/** Payload entries not already rendered elsewhere on the card (agent-written
+ *  measurements and context) as "key=value" pairs. */
+function extraPayload(payload: Record<string, unknown>): string[] {
+  return Object.entries(payload)
+    .filter(([key, value]) => !SHOWN_PAYLOAD_KEYS.has(key) && describe(value) !== "")
+    .map(([key, value]) => `${key}=${describe(value)}`);
+}
+
 function PromotionPanel({ detail }: { detail: BatchDetail }) {
   const { promotion, batch } = detail;
   return (
@@ -332,16 +375,20 @@ export function ReviewScreen() {
                       <div className="flex items-center gap-2">
                         <SeverityPill severity={flag.severity} />
                         <span className="mono text-[12px]">{flag.kind}</span>
-                        {typeof flag.payload["line_id"] === "number" && (
+                        {lineRef(flag.payload) !== null && (
                           <span className="mono ml-auto text-[10px] text-faint">
-                            {String(flag.payload["source"] ?? "label")}:
-                            {String(flag.payload["line_id"])}
+                            {lineRef(flag.payload)}
                           </span>
                         )}
                       </div>
-                      {typeof flag.payload["detail"] === "string" && (
+                      {describe(flag.payload["detail"]) !== "" && (
                         <div className="mt-1 text-[12px] text-dim">
-                          {flag.payload["detail"]}
+                          {describe(flag.payload["detail"])}
+                        </div>
+                      )}
+                      {extraPayload(flag.payload).length > 0 && (
+                        <div className="mono mt-1 text-[11px] text-faint">
+                          {extraPayload(flag.payload).join(" · ")}
                         </div>
                       )}
                       {flag.evidence.length > 0 && (
@@ -359,16 +406,15 @@ export function ReviewScreen() {
                           <tbody>
                             {flag.evidence.map((line, index) => (
                               <tr key={index} className="border-t border-edge/60">
-                                <td className="py-1 pr-2">{String(line["id"])}</td>
-                                <td className="py-1 pr-2">{String(line["isrc"] || "—")}</td>
-                                <td className="py-1 pr-2">{String(line["store"])}</td>
-                                <td className="py-1 pr-2">{String(line["territory"])}</td>
+                                <td className="py-1 pr-2">{cell(line["id"])}</td>
+                                <td className="py-1 pr-2">{cell(line["isrc"])}</td>
+                                <td className="py-1 pr-2">{cell(line["store"])}</td>
+                                <td className="py-1 pr-2">{cell(line["territory"])}</td>
                                 <td className="py-1 pr-2 text-right">
-                                  {String(line["units"])}
+                                  {cell(line["units"])}
                                 </td>
                                 <td className="py-1 text-right">
-                                  {money(String(line["gross_amount"]))}{" "}
-                                  {String(line["currency"])}
+                                  {money(line["gross_amount"])} {cell(line["currency"])}
                                 </td>
                               </tr>
                             ))}
@@ -417,13 +463,13 @@ export function ReviewScreen() {
                         </span>
                       </td>
                       <td className="mono py-1.5 pr-2 text-right text-dim">
-                        {money(allocation.line_detail.gross ?? null)}
+                        {money(allocation.line_detail?.gross)}
                       </td>
                       <td className="mono py-1.5 pr-2 text-right text-dim">
-                        {money(allocation.line_detail.recouped ?? null)}
+                        {money(allocation.line_detail?.recouped)}
                       </td>
                       <td className="mono py-1.5 pr-2 text-right text-dim">
-                        {money(allocation.line_detail.balance_after ?? null)}
+                        {money(allocation.line_detail?.balance_after)}
                       </td>
                       <td className="mono py-1.5 text-right text-green">
                         {money(allocation.net_payable)}

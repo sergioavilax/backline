@@ -8,14 +8,17 @@ span feeds, and the browse endpoints.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from typing import Any
 
+import asyncpg
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+import backline.config
 from tests.conftest import requires_postgres
 
 pytestmark = requires_postgres
@@ -150,6 +153,82 @@ def test_reconciler_submits_and_review_approves(
     # A reviewed batch cannot be reviewed again.
     again = api_client.post(f"/review/batches/{batch_id}/approve", json={})
     assert again.status_code == 409
+
+
+def test_review_serves_live_agent_shaped_batch(api_client: TestClient) -> None:
+    """Phase 6 verification, finding 1 (server half): live-agent batches carry
+    JSONB the demo scripts never produce — line_detail money as JSON numbers,
+    flag payloads with line_ids lists, numeric-string ids, scalar line_ids, or
+    nothing at all. The detail endpoint must serve them (no 500) and resolve
+    evidence for every id spelling."""
+
+    async def insert(database_url: str) -> tuple[int, list[int]]:
+        conn = await asyncpg.connect(database_url)
+        try:
+            # The earliest ingested period: long-settled, so no other test's staging
+            # or promotion state touches it.
+            period: str = await conn.fetchval("SELECT MIN(period) FROM label.statement_lines")
+            line_ids = [
+                r["id"]
+                for r in await conn.fetch(
+                    "SELECT id FROM label.statement_lines WHERE period = $1 ORDER BY id LIMIT 3",
+                    period,
+                )
+            ]
+            assert len(line_ids) == 3, "seeded world must have statement lines"
+            batch_id: int = await conn.fetchval(
+                "INSERT INTO staging.statement_batches (period, summary) "
+                "VALUES ($1, $2::jsonb) RETURNING id",
+                period,
+                json.dumps({"n_allocations": 2}),  # no note, no totals — minimal summary
+            )
+            for artist_id, line_detail in [
+                (1, {"gross": 1204.5678, "recouped": 0, "balance_after": -12.5}),
+                (2, {}),
+            ]:
+                await conn.execute(
+                    "INSERT INTO staging.proposed_allocations "
+                    "(batch_id, artist_id, period, line_detail, net_payable) "
+                    "VALUES ($1, $2, $3, $4::jsonb, 10.5)",
+                    batch_id,
+                    artist_id,
+                    period,
+                    json.dumps(line_detail),
+                )
+            payloads = [
+                {"source": "label", "line_ids": line_ids[:2], "observed": 2},
+                {"line_id": str(line_ids[2]), "detail": {"observed_gross": 913.4}},
+                {"line_ids": line_ids[0]},  # scalar where a list belongs
+                {},
+            ]
+            for payload in payloads:
+                await conn.execute(
+                    "INSERT INTO staging.flags (batch_id, kind, severity, payload) "
+                    "VALUES ($1, 'duplicate_line', 'warning', $2::jsonb)",
+                    batch_id,
+                    json.dumps(payload),
+                )
+            return batch_id, line_ids
+        finally:
+            await conn.close()
+
+    batch_id, line_ids = asyncio.run(insert(backline.config.get_settings().database_url))
+
+    listed = api_client.get("/review/batches").json()
+    assert any(b["id"] == batch_id for b in listed)
+
+    response = api_client.get(f"/review/batches/{batch_id}")
+    assert response.status_code == 200, response.text
+    detail = response.json()
+    # Pass-through JSONB arrives verbatim (numbers stay numbers — the UI formats them).
+    gross = {a["artist_id"]: a["line_detail"] for a in detail["allocations"]}
+    assert gross[1]["gross"] == 1204.5678
+    assert gross[2] == {}
+    # Evidence resolves for list, numeric-string, and scalar id spellings; never 500s.
+    evidence = [f["evidence"] for f in detail["flags"]]
+    assert sorted(len(e) for e in evidence) == [0, 1, 1, 2]
+    resolved = {line["id"] for flag_evidence in evidence for line in flag_evidence}
+    assert resolved == set(line_ids)
 
 
 def test_reject_requires_note(api_client: TestClient, proposed_batch: dict[str, Any]) -> None:

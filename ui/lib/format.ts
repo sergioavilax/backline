@@ -1,15 +1,25 @@
 /** Display formatting. Money arrives as decimal strings and is formatted by string
- *  manipulation — the UI never routes an amount through a float (invariant 1). */
+ *  manipulation — the UI never routes an amount through a float (invariant 1).
+ *
+ *  Input is `unknown` on purpose: allocation `line_detail` and flag payloads are
+ *  agent-authored JSONB served verbatim, and live agents write JSON numbers (or
+ *  omit keys) where the demo scripts write decimal strings. Numbers are stringified
+ *  for display only — never parsed, never computed with. */
 
-/** "21568.240000" → "21,568.24"; keeps sign; trims to `places` decimals. */
-export function money(value: string | null | undefined, places = 2): string {
-  if (value === null || value === undefined || value === "") return "—";
-  let raw = value.trim();
+/** "21568.240000" → "21,568.24"; keeps sign; trims to `places` decimals.
+ *  null/undefined/"" (and non-scalar garbage) → "—"; a value that isn't a plain
+ *  decimal renders as-is rather than crashing the view. */
+export function money(value: unknown, places = 2): string {
+  if (typeof value !== "string" && typeof value !== "number") return "—";
+  const trimmed = typeof value === "number" ? String(value) : value.trim();
+  if (trimmed === "") return "—";
+  let raw = trimmed;
   let sign = "";
   if (raw.startsWith("-")) {
     sign = "−";
     raw = raw.slice(1);
   }
+  if (!/^\d+(\.\d+)?$/.test(raw)) return trimmed;
   const [wholeRaw, fracRaw = ""] = raw.split(".");
   const whole = wholeRaw.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   const frac = (fracRaw + "0".repeat(places)).slice(0, places);
@@ -17,10 +27,12 @@ export function money(value: string | null | undefined, places = 2): string {
 }
 
 /** Costs are small: show 4 decimals under $1, cents otherwise. */
-export function cost(value: string | null | undefined): string {
-  if (!value) return "$0.00";
-  const negative = value.trim().startsWith("-");
-  const abs = value.replace("-", "");
+export function cost(value: unknown): string {
+  if (typeof value !== "string" && typeof value !== "number") return "$0.00";
+  const raw = typeof value === "number" ? String(value) : value.trim();
+  if (raw === "") return "$0.00";
+  const negative = raw.startsWith("-");
+  const abs = raw.replace("-", "");
   const underOne = /^0*\./.test(abs) || abs.replace(/\..*$/, "").replace(/^0+/, "") === "";
   return `${negative ? "−" : ""}$${money(abs, underOne ? 4 : 2)}`;
 }

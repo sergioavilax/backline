@@ -107,7 +107,14 @@ export interface Allocation {
   stage_name: string | null;
   period: string;
   net_payable: string;
-  line_detail: { gross?: string; recouped?: string; balance_after?: string };
+  /** Agent-authored JSONB served verbatim: live agents write JSON numbers (and may
+   *  omit keys or write null) where the demo script writes decimal strings. */
+  line_detail: {
+    gross?: string | number | null;
+    recouped?: string | number | null;
+    balance_after?: string | number | null;
+    [key: string]: unknown;
+  };
 }
 
 export interface Flag {

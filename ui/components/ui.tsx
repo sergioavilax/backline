@@ -9,13 +9,13 @@ export function Money({
   signed = false,
   className = "",
 }: {
-  value: string | null | undefined;
+  value: string | number | null | undefined;
   places?: number;
   signed?: boolean;
   className?: string;
 }) {
   const text = money(value, places);
-  const positive = signed && value !== null && value !== undefined && !value.startsWith("-");
+  const positive = signed && text !== "—" && !text.startsWith("−");
   return (
     <span className={`mono ${positive ? "text-green" : ""} ${className}`}>
       {positive ? "+" : ""}

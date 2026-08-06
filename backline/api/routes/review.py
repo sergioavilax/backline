@@ -115,6 +115,28 @@ async def _promotion_preview(pool: asyncpg.Pool, period: str) -> PromotionPrevie
 
 
 _EVIDENCE_SHOWN = 5
+_BIGINT_MAX = 2**63 - 1
+
+
+def _as_line_id(ref: Any) -> int | None:
+    """A line reference as live agents actually write them: int or numeric string
+    (bools and out-of-bigint values are garbage, not ids)."""
+    if isinstance(ref, bool):
+        return None
+    if isinstance(ref, str) and ref.isdigit():
+        ref = int(ref)
+    if isinstance(ref, int) and 0 <= ref <= _BIGINT_MAX:
+        return ref
+    return None
+
+
+def _payload_line_ids(payload: dict[str, Any]) -> list[int]:
+    """Every line id a payload references — ``line_id`` scalar plus ``line_ids``,
+    which agents write as a list, a scalar, or not at all."""
+    extras = payload.get("line_ids")
+    refs = [payload.get("line_id"), *(extras if isinstance(extras, list) else [extras])]
+    ids = (_as_line_id(ref) for ref in refs[: _EVIDENCE_SHOWN + 1])
+    return [line_id for line_id in ids if line_id is not None]
 
 
 async def _flag_evidence(
@@ -125,12 +147,8 @@ async def _flag_evidence(
     staged_ids: set[int] = set()
     for flag in flags:
         payload = jload(flag["payload"]) or {}
-        line_id = payload.get("line_id")
-        if isinstance(line_id, int):
-            (staged_ids if payload.get("source") == "staged" else label_ids).add(line_id)
-        for extra in payload.get("line_ids", [])[:_EVIDENCE_SHOWN]:
-            if isinstance(extra, int):
-                (staged_ids if payload.get("source") == "staged" else label_ids).add(extra)
+        bucket = staged_ids if payload.get("source") == "staged" else label_ids
+        bucket.update(_payload_line_ids(payload))
 
     lines: dict[tuple[str, int], dict[str, Any]] = {}
     if label_ids:
@@ -152,8 +170,8 @@ async def _flag_evidence(
     for flag in flags:
         payload = jload(flag["payload"]) or {}
         source = "staged" if payload.get("source") == "staged" else "label"
-        ids = [payload.get("line_id"), *payload.get("line_ids", [])]
-        rows = [lines[(source, i)] for i in ids if isinstance(i, int) and (source, i) in lines]
+        ids = _payload_line_ids(payload)
+        rows = [lines[(source, i)] for i in ids if (source, i) in lines]
         evidence[flag["id"]] = rows[:_EVIDENCE_SHOWN]
     return evidence
 
