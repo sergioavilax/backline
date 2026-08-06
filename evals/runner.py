@@ -36,7 +36,7 @@ from typing import Any, Literal
 import asyncpg
 
 from backline.agents.configs import build_agent
-from backline.config import Settings, get_settings
+from backline.config import Settings, anchor_path, get_settings
 from backline.core.runtime import AgentRuntime
 from backline.core.trace import InMemorySink, Tracer, TraceSink
 from backline.jsonutil import canonical_dumps
@@ -75,6 +75,13 @@ _PROJECTION: dict[str, tuple[int, int]] = {
 
 class BudgetRefused(RuntimeError):
     """Projection exceeds the budget and --yes was not given."""
+
+
+def artifact_dir(config: RunnerConfig, eval_run_id: uuid.UUID) -> Path:
+    """Where one eval run's artifacts land: ``out_dir / <eval_run_id>``, with a
+    relative ``out_dir`` anchored at the repo root — never the process CWD (D-022:
+    a run launched from inside an old artifact directory nested its output there)."""
+    return anchor_path(config.out_dir) / str(eval_run_id)
 
 
 @dataclass(frozen=True)
@@ -506,11 +513,11 @@ class EvalRunner:
         await load_answer_key(self._pool, config.suite)
         sha = git_sha()
         eval_run_id, done = await self._create_or_resume_run(config, sha)
-        out_dir = config.out_dir / str(eval_run_id)
+        out_dir = artifact_dir(config, eval_run_id)
         out_dir.mkdir(parents=True, exist_ok=True)
         artifact = out_dir / "results.jsonl"
 
-        index = CorpusIndex.build(config.data_dir) if config.track == "b0" else None
+        index = CorpusIndex.build(anchor_path(config.data_dir)) if config.track == "b0" else None
         pending = [q for q in questions if q.id not in done]
 
         spent_lock = asyncio.Lock()

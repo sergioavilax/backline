@@ -147,6 +147,21 @@ _TOOL_SETS: dict[str, tuple[Callable[[ToolContext], Tool[Any]], ...]] = {
 }
 
 
+# The Reconciler's submit step echoes the whole allocation list verbatim (D-013),
+# and the seeded world pays 95-103 artists in every full period — ≈13k chars of
+# allocations JSON alone (~3.2k tokens at the len/4 floor, more under the real
+# tokenizer) before flags, the reviewer note, and any preamble text. A contract-
+# faithful submit_batch call therefore cannot stream inside the 4096 default:
+# every multi_step eval run (2b9f39fb, 127c5ad8, ddb797dc) died retrying the
+# truncated call (D-021). 16384 holds the measured worst case with ~3x margin;
+# the per-run budget still bounds actual spend.
+_RECONCILER_MAX_TOKENS = 16_384
+
+
+def _max_tokens_for(name: str) -> int:
+    return _RECONCILER_MAX_TOKENS if name == "reconciler" else 4096
+
+
 def _limits_for(name: str) -> RunLimits:
     base = RunLimits.from_settings()
     if name != "reconciler":
@@ -195,5 +210,6 @@ def build_agent(
         checks=(sql_policy_check,),
         result_checks=(injection_result_check,),
         finalize=finalize,
+        max_tokens=_max_tokens_for(name),
         trace_attrs={"prompt_sha256": prompt.short_hash},
     )

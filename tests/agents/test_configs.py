@@ -87,11 +87,16 @@ def test_reconciler_gets_workflow_headroom() -> None:
     assert reconciler.limits.run_budget_usd == max(settings.run_budget_usd, Decimal("2.50"))
     assert reconciler.limits.tool_timeout_s >= 120
     assert reconciler.limits.max_result_tokens >= 4000
+    # D-021: the full-period submit must fit in one reply — the seeded world pays
+    # 95-103 artists per period (~13k chars of allocations JSON alone), so the
+    # 4096 default could never stream a contract-faithful submit_batch call.
+    assert reconciler.max_tokens == 16_384
     # Counsel/Analyst stay on the settings limits, untouched by the raise.
     for name in ("counsel", "analyst"):
         agent = build_agent(name, _ctx())
         assert agent.limits.max_iterations == settings.max_iterations
         assert agent.limits.run_budget_usd == settings.run_budget_usd
+        assert agent.max_tokens == 4096
 
 
 def test_unknown_agent_is_loud() -> None:

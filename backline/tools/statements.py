@@ -119,7 +119,7 @@ def build_ingest_statement_tool(ctx: ToolContext) -> Tool[IngestStatementParams]
                 f"{statement['period']}) is already ingested — its lines are in "
                 f"label.statement_lines. ingest_statement is only for 'received' drops."
             )
-        file_path = Path(ctx.settings.data_dir) / "inbox" / Path(params.path).name
+        file_path = ctx.settings.data_path / "inbox" / Path(params.path).name
         if not file_path.is_file():
             return (
                 f"Statement {statement['id']} expects the drop at {statement['raw_path']}, "

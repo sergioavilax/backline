@@ -840,3 +840,53 @@ stay comparable under the same `suite_hash`.
 - No baseline written; no live re-run executed from this session (per operator
   instruction). Re-run recommendation recorded in the session report:
   `--categories abstention,multi_step`.
+
+## Inter-phase (pre-Phase 6) — eval run ddb797dc Reconciler diagnosis + truncation/path fixes · 2026-08-06
+
+Diagnosed the multi_step reconciler failure that survived D-020's budget raise
+(run ddb797dc: 5/6 `run_exhausted` at $1.20–1.40 — under the $2.50 cap, so the
+iteration cap was the binder — and multi_step-003 `no_answer_line` at $0.22).
+Root cause measured against the seeded world, not guessed from traces: every
+full period pays 95–103 artists, so the verbatim `submit_batch` allocation
+payload (~13k chars ≈ 3.2k tokens at the len/4 floor, before flags/note/
+preamble) cannot stream inside the 4096-token output ceiling — and the runtime
+ignored `stop_reason=max_tokens`, so cut tool calls partial-parsed into
+`invalid_tool_args` retry loops (exhaustion) and one cut text reply finalized
+as a "completed" answer with no `ANSWER:` line (multi_step-003). Full write-up
+in D-021.
+
+**Shipped**
+
+- **Runtime truncation contract (D-021)**: a `max_tokens`-cut reply is never
+  acted on — tool calls discarded un-executed (keyed off `stop_reason`; a
+  streamed-prefix dict can validate and still be wrong, which is also how a
+  silently partial batch could have submitted), truncated text never finalized;
+  both paths return explicit notices, record `output_truncated` guardrail
+  spans, and consume their iteration. Three runtime tests, including the
+  valid-prefix discard case.
+- **Reconciler `max_tokens` = 16384** (others stay 4096): fits the measured
+  worst-case submit with ~3× margin; pinned in the config test.
+- **Path anchoring (D-022)**: relative artifact/trace/data paths anchor at the
+  repo root (`repo_root`/`anchor_path`/`Settings.data_path`) — fixes eval
+  artifacts nesting inside an old run dir when launched from there
+  (`data/evals/127c5ad8…/data/evals/ddb797dc…`); applied to eval artifacts,
+  trace JSONL sink, B0 corpus index, ingest inbox, embed pipeline; absolute
+  configs (compose `/data`, test `tmp_path`) untouched. Chdir regression test
+  mirrors the observed nesting.
+
+**Deferred / unchanged**
+
+- Suite, prompts, tool contracts, budgets, iteration caps: untouched —
+  `suite_hash` comparability holds. Allocations-by-reference for
+  `submit_batch` noted in D-021 as a future design change, not a bug fix.
+- No live run, no baseline write (operator instruction); the multi_step
+  re-run and `_PROJECTION` recalibration stay on the operator's list.
+- **Span-tree confirmation (operator pull, post-diagnosis)**: the ddb797dc
+  spans match the pre-registered signature exactly — 68 `max_tokens` stops at
+  4096 output tokens across the six questions; the five exhausted runs each
+  show 14–16 `submit_batch` denials, every one `invalid_tool_args:
+  allocations Field required` (the cut always severed the whole `allocations`
+  field; the parsed prefix held only `period`), ending at `iteration 25
+  exceeds max_iterations=24`; multi_step-003 ran cleanly through
+  `compute_allocations` and ended on a single mid-text `max_tokens` cut with
+  no tool_call after it. Diagnosis confirmed; investigation closed.

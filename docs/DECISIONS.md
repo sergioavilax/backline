@@ -801,3 +801,94 @@ reservation error. The first uncensored run's artifacts are the recalibration
 source, and the check on $2.50 itself. No live run, baseline write, or
 projection recalibration happened with this change; the multi_step re-run
 stays on the operator's list.
+
+## D-021 — Truncated replies are never acted on; the Reconciler output ceiling is 16384 (eval run ddb797dc)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** Run ddb797dc (post-D-020, $2.50 Reconciler cap) re-failed all six
+multi_step reconciler questions — 5/6 `run_exhausted` at only $1.20–1.40 with
+372–535s latencies, 1/6 (`multi_step-003`) `no_answer_line` at $0.22. Budget
+was no longer the binder; the iteration cap was. Every trace shows one clean
+`scan_anomalies`, one clean `compute_allocations`, `submitted: 0`. The cause
+is arithmetic, not judgment: the seeded world pays **95–103 artists in every
+full period**, and `compute_allocations` instructs the agent to feed those
+rows to `submit_batch` verbatim — ≈13k chars of allocations JSON (~3.2k tokens
+at the repo's len/4 floor, more under the real tokenizer) *before* flags with
+evidence payloads, the reviewer note, tool-call encoding, and preamble text.
+`AgentSpec.max_tokens` was 4096: **a contract-faithful full-period
+`submit_batch` call cannot stream inside the output window** — deterministic,
+which is why the category failed 6/6 in all three runs while scan-only
+reconciliation questions (no submit) passed. The runtime then made a hard wall
+into a loop: it ignored `stop_reason`. The SDK assembles streamed tool
+arguments from partial JSON, so a `max_tokens`-cut `submit_batch` arrives as a
+*prefix dict* — usually failing Pydantic validation (`invalid_tool_args`
+denial → retry → identical truncation → iteration cap), and in the worst case
+*validating* with a silently missing tail of allocations, which only luck kept
+from submitting a partial batch. A reply cut mid-text (no tool call started)
+took the other branch: empty `tool_calls` reads as termination, so the
+truncated prose **finalized as the answer** — `multi_step-003`'s early
+"completed" with no `ANSWER:` line. (Its `information_schema` probe, denied by
+the SQL policy, was mid-loop flailing — symptom, not cause.)
+
+*Confirmed against the run's span trees (operator pull): 68 `max_tokens` stops
+at 4096 output tokens across the six questions; 14–16 `submit_batch`
+`invalid_tool_args` denials per exhausted run — every one `allocations Field
+required`, the streamed prefix retaining only `period` — ending at
+`iteration 25 exceeds max_iterations=24`; multi_step-003 ended on a single
+mid-text cut with no tool call after it.*
+
+**Decisions.**
+
+- **A `max_tokens`-truncated reply is never acted on.** Tool calls from a
+  truncated reply are discarded un-executed — keyed off `stop_reason`, not off
+  validation failing, because a prefix of streamed arguments can validate and
+  still not be what the model said. Each discarded call gets an explicit
+  `is_error` tool result telling the model it was cut off and to re-issue.
+  Truncated text never finalizes: the partial stays in history and a runtime
+  notice asks the model to continue and finish. Both paths record an
+  `output_truncated` guardrail incident (a span, per invariant 6) and consume
+  their iteration. No `tool_call` span is emitted for a discarded call — it
+  was never a validated attempt — so T2 counts (`single_batch`, `no_batch`)
+  keep meaning "real calls"; the guardrail span carries the tool names.
+- **The Reconciler's `max_tokens` is 16384** (other agents stay at 4096): the
+  measured worst case needs ~4.5–6k real output tokens for the verbatim
+  allocation list + flags + note; 16384 holds it with ~3× margin, and the
+  $2.50 budget still bounds actual spend. This is the unblocking fix; the
+  truncation contract is the safety fix that outlives it.
+- **Correction to D-020's aside**: "iterations were never the binding
+  constraint" was an artifact of budget-censored runs — once the cap rose, the
+  same truncation loop ran into the iteration cap instead. Caps only name the
+  binder, not the disease; the disease was the un-streamable call.
+- Considered and deferred: passing allocations by reference (e.g.
+  `submit_batch` reading the last compute result server-side) would shrink the
+  call to O(exclusions) instead of O(roster) and remove the transcription
+  surface entirely — but it changes the D-013 tool contracts and the agent's
+  ownership of the submitted list, so it is a design decision for a future
+  phase, not a bug fix.
+
+**Consequence.** Runs can no longer "complete" on cut-off text or burn
+iterations re-streaming an impossible call; both failure shapes surface as
+visible `output_truncated` incidents. The multi_step re-run (operator's list)
+is expected to reach `submit_batch` within budget; `_PROJECTION`
+recalibration still waits for that first uncensored run per D-020.
+
+## D-022 — Artifact and trace paths anchor at the repo root (eval harness)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** Eval artifacts wrote to CWD-relative `data/evals/<run_id>`; a run
+launched from inside an old artifact directory nested the new run's output
+there (`data/evals/127c5ad8…/data/evals/ddb797dc…`). Trace JSONL and the
+ingest inbox resolved `data/` the same fragile way.
+
+**Decision.** Relative configured paths anchor at the repository root, located
+from the package (`pyproject.toml` marker walk-up), never from the process
+CWD: `repo_root()` / `anchor_path()` in `backline/config.py`, plus
+`Settings.data_path` as the absolute form of `data_dir`. Applied to eval
+artifact dirs (`evals.runner.artifact_dir`), the trace `JsonlSink`, the B0
+corpus index, the ingest inbox, and the embed pipeline. Absolute paths —
+compose's `DATA_DIR=/data`, tests' `tmp_path` — pass through untouched, so
+deployment configuration stays authoritative and the anchor only replaces the
+accidental CWD dependence. Tested with a chdir-into-tmp regression test
+mirroring the observed nesting.

@@ -245,7 +245,7 @@ async def _amain(argv: list[str] | None = None) -> int:
 
     pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=4)
     try:
-        report = await run_embed(pool, data_dir=Path(settings.data_dir), embedder=embedder)
+        report = await run_embed(pool, data_dir=settings.data_path, embedder=embedder)
     finally:
         await pool.close()
     print(
