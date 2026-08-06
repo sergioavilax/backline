@@ -881,7 +881,12 @@ in D-021.
   `submit_batch` noted in D-021 as a future design change, not a bug fix.
 - No live run, no baseline write (operator instruction); the multi_step
   re-run and `_PROJECTION` recalibration stay on the operator's list.
-  Trace-level confirmation pull for ddb797dc requested from the operator
-  (expected signature: repeated `llm_call` spans with `stop_reason:
-  "max_tokens"` + `invalid_tool_args` guardrails on `submit_batch`; for
-  multi_step-003 a final `max_tokens` llm_call with no tool_call children).
+- **Span-tree confirmation (operator pull, post-diagnosis)**: the ddb797dc
+  spans match the pre-registered signature exactly — 68 `max_tokens` stops at
+  4096 output tokens across the six questions; the five exhausted runs each
+  show 14–16 `submit_batch` denials, every one `invalid_tool_args:
+  allocations Field required` (the cut always severed the whole `allocations`
+  field; the parsed prefix held only `period`), ending at `iteration 25
+  exceeds max_iterations=24`; multi_step-003 ran cleanly through
+  `compute_allocations` and ended on a single mid-text `max_tokens` cut with
+  no tool_call after it. Diagnosis confirmed; investigation closed.

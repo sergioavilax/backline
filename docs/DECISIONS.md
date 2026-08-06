@@ -831,6 +831,13 @@ truncated prose **finalized as the answer** — `multi_step-003`'s early
 "completed" with no `ANSWER:` line. (Its `information_schema` probe, denied by
 the SQL policy, was mid-loop flailing — symptom, not cause.)
 
+*Confirmed against the run's span trees (operator pull): 68 `max_tokens` stops
+at 4096 output tokens across the six questions; 14–16 `submit_batch`
+`invalid_tool_args` denials per exhausted run — every one `allocations Field
+required`, the streamed prefix retaining only `period` — ending at
+`iteration 25 exceeds max_iterations=24`; multi_step-003 ended on a single
+mid-text cut with no tool call after it.*
+
 **Decisions.**
 
 - **A `max_tokens`-truncated reply is never acted on.** Tool calls from a
