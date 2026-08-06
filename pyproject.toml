@@ -39,13 +39,13 @@ embed = ["sentence-transformers>=3.2", "torch>=2.2"]
 # implicit `uv lock`. On a network that reaches it: uncomment, run `uv lock`, and add
 # `--extra embed` to both `uv sync` lines in docker/api.Dockerfile.
 #
-# [tool.uv.sources]
-# torch = [{ index = "pytorch-cpu" }]
-#
-# [[tool.uv.index]]
-# name = "pytorch-cpu"
-# url = "https://download.pytorch.org/whl/cpu"
-# explicit = true
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [dependency-groups]
 dev = [

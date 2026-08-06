@@ -19,13 +19,13 @@ WORKDIR /app
 # reaches it: uncomment the pytorch-cpu index block there, run `uv lock`, and add
 # `--extra embed` to both `uv sync` lines below.
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project --extra embed
 
 # Project code.
 COPY backline ./backline
 COPY datagen ./datagen
 COPY migrations ./migrations
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --extra embed
 
 EXPOSE 8000
 CMD ["uv", "run", "--no-sync", "uvicorn", "backline.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
