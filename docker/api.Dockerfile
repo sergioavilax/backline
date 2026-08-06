@@ -13,8 +13,10 @@ WORKDIR /app
 # The `embed` extra (sentence-transformers) is deliberately NOT installed: PyPI's
 # linux torch wheels are CUDA builds (~5 GB of image for a CPU-only stack), so the
 # init job runs `rag.embed --best-effort` (chunks + FTS always work) and full hybrid
-# embeddings build via host-side `make embed` — see docs/DECISIONS.md D-011. To bake
-# them in after re-locking torch against the pytorch CPU wheel index, add
+# embeddings build via host-side `make embed` — see docs/DECISIONS.md D-011. The
+# CPU-wheel re-lock is staged, commented out, in pyproject.toml (build sandboxes
+# cannot reach download.pytorch.org). To bake real models in, on a network that
+# reaches it: uncomment the pytorch-cpu index block there, run `uv lock`, and add
 # `--extra embed` to both `uv sync` lines below.
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project

@@ -9,7 +9,8 @@ import math
 
 import pytest
 
-from backline.rag.embedder import HashingEmbedder, build_embedder
+from backline.rag.embedder import HashingEmbedder, build_embedder, get_embedder
+from backline.rag.reranker import LexicalReranker, get_reranker
 
 
 def norm(vec: list[float]) -> float:
@@ -75,3 +76,32 @@ def test_build_embedder_real_model_requires_extra() -> None:
         pass
     with pytest.raises(RuntimeError, match="embed"):
         build_embedder("BAAI/bge-small-en-v1.5")
+
+
+def test_get_embedder_caches_one_instance_per_spec() -> None:
+    """Model weights must load once per process, not once per query (a real
+    sentence-transformers load costs seconds; the retrieval probe alone makes 160
+    pipeline passes)."""
+    get_embedder.cache_clear()
+    a = get_embedder("hash")
+    b = get_embedder("hash")
+    assert a is b
+    assert isinstance(a, HashingEmbedder)
+    info = get_embedder.cache_info()
+    assert (info.misses, info.hits) == (1, 1)
+    # A distinct spec is a distinct cache entry, not a collision.
+    assert get_embedder("hash-bow-384-v1") is not a
+
+
+def test_get_reranker_caches_one_instance_per_spec() -> None:
+    get_reranker.cache_clear()
+    a = get_reranker("lexical")
+    b = get_reranker("lexical")
+    assert a is b
+    assert isinstance(a, LexicalReranker)
+    info = get_reranker.cache_info()
+    assert (info.misses, info.hits) == (1, 1)
+
+
+def test_build_embedder_stays_uncached() -> None:
+    assert build_embedder("hash") is not build_embedder("hash")

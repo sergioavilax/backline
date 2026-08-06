@@ -21,7 +21,7 @@ from typing import Any
 
 import asyncpg
 
-from backline.rag.embedder import Embedder, build_embedder, vector_literal
+from backline.rag.embedder import Embedder, get_embedder, vector_literal
 from backline.rag.governing import governing_docs
 from backline.rag.reranker import Reranker
 
@@ -98,7 +98,8 @@ def _resolve_query_embedder(stored_model: str, provided: Embedder | None) -> Emb
                 f"that built the store (re-run `make embed` to switch)"
             )
         return provided
-    return build_embedder(stored_model)
+    # Process-wide cache: resolving the store's model must not reload weights per query.
+    return get_embedder(stored_model)
 
 
 async def search_chunks(

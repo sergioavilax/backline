@@ -11,8 +11,9 @@ Two implementations of one contract (384-dim, L2-normalized):
   lexical-similarity baseline rather than noise.
 
 The chunk store records which embedder produced each vector (``embedding_model``);
-queries must embed with the same one — ``search`` enforces that, this module just
-builds embedders by spec.
+queries must embed with the same one — ``search`` enforces that. ``get_embedder`` is
+the process-wide cache (model weights load once per process, not once per query);
+``build_embedder`` constructs uncached.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import hashlib
 import math
 from collections import Counter
 from collections.abc import Sequence
+from functools import lru_cache
 from itertools import pairwise
 from typing import Protocol
 
@@ -97,7 +99,13 @@ class SentenceTransformerEmbedder:
             ) from error
         self.id = model_name
         self._model = SentenceTransformer(model_name, device="cpu")
-        model_dim = self._model.get_sentence_embedding_dimension()
+        # sentence-transformers ≥ 5.6 renamed get_sentence_embedding_dimension to
+        # get_embedding_dimension (the old name shims through a FutureWarning); the
+        # extra's floor is ≥ 3.2, so probe for the new name and fall back.
+        dim_of = getattr(self._model, "get_embedding_dimension", None)
+        if not callable(dim_of):
+            dim_of = self._model.get_sentence_embedding_dimension
+        model_dim = dim_of()
         if model_dim != self.dim:
             raise RuntimeError(
                 f"embedder {model_name!r} produces {model_dim}-dim vectors; the chunk "
@@ -123,6 +131,19 @@ def build_embedder(spec: str) -> Embedder:
     if spec == "hash" or spec == HASH_EMBEDDER_ID:
         return HashingEmbedder()
     return SentenceTransformerEmbedder(spec)
+
+
+@lru_cache(maxsize=4)
+def get_embedder(spec: str) -> Embedder:
+    """Process-wide embedder cache — the default way to obtain an embedder.
+
+    Loading a sentence-transformers model costs seconds and hundreds of MB; every
+    query path (``search_chunks`` resolving the store's model, the retrieval probe,
+    the embed job) must share one instance per spec rather than reloading weights
+    per call. Embedders are stateless scorers, so sharing is safe. Failures
+    (missing extra, no model download) are not cached — a later call may succeed.
+    """
+    return build_embedder(spec)
 
 
 def vector_literal(vector: Sequence[float]) -> str:

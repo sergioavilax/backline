@@ -30,7 +30,7 @@ import asyncpg
 
 from backline.config import get_settings
 from backline.rag.chunker import ClauseChunk, chunk_document
-from backline.rag.embedder import Embedder, build_embedder, vector_literal
+from backline.rag.embedder import Embedder, get_embedder, vector_literal
 
 _EMBED_BATCH = 128
 _IVFFLAT_LISTS = 64  # ~sqrt(n_chunks) for this corpus (~3.5K chunks)
@@ -231,7 +231,7 @@ async def _amain(argv: list[str] | None = None) -> int:
     spec = args.embedder or settings.embed_model
     embedder: Embedder | None
     try:
-        embedder = build_embedder(spec)
+        embedder = get_embedder(spec)
     except (RuntimeError, OSError) as error:
         if not args.best_effort:
             print(f"embed: cannot load embedder {spec!r}: {error}", file=sys.stderr)

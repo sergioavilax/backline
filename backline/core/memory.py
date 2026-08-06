@@ -3,8 +3,9 @@
 Two of the three scopes ship here, deliberately boring and legible:
 
 - ``SessionMemory`` — rolling conversation window; overflow folds into a running
-  summary via a pluggable summarizer (Phase 4 wires the utility model in; without one,
-  overflow elides with a deterministic note so keyless paths stay honest).
+  summary via a pluggable summarizer (the utility model plugs in when Phase 6's API
+  constructs sessions — D-014; without one, overflow elides with a deterministic
+  note so keyless paths stay honest).
 - ``WorkingMemory`` — per-run scratchpad of tool results, deduplicated by content hash
   (the Prometheus lesson): an identical result re-fetched mid-run enters the context
   once; repeats become a short pointer.

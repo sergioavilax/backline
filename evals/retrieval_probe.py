@@ -32,8 +32,8 @@ from typing import Any
 import asyncpg
 
 from backline.config import get_settings
-from backline.rag.embedder import Embedder, build_embedder
-from backline.rag.reranker import Reranker, build_reranker
+from backline.rag.embedder import Embedder, get_embedder
+from backline.rag.reranker import Reranker, get_reranker
 from backline.rag.search import search_chunks
 
 AS_OF = date(2026, 6, 30)  # the seeded window's last day
@@ -381,8 +381,11 @@ async def _amain(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     settings = get_settings()
-    embedder = build_embedder(args.embedder) if args.embedder else None
-    reranker = build_reranker(args.rerank_model or settings.rerank_model)
+    # Cached accessors: one weight load per process. With no --embedder override the
+    # store's recorded model decides inside search_chunks — through the same cache,
+    # so 160 pipeline passes still load the model once.
+    embedder = get_embedder(args.embedder) if args.embedder else None
+    reranker = get_reranker(args.rerank_model or settings.rerank_model)
 
     pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=4)
     try:

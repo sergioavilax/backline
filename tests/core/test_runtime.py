@@ -412,3 +412,45 @@ async def test_custom_finalizer_types_the_answer() -> None:
     assert result.status == "completed"
     assert result.final is not None
     assert result.final.abstained is True
+
+
+async def test_result_check_flags_annotates_and_never_blocks() -> None:
+    """Phase 4 §4.6: a ResultCheck hit is a guardrail span + an annotated result —
+    the model still sees the tool output and the run completes."""
+    from backline.core.guardrails import Incident
+
+    def canary_check(tool_name: str, result_text: str) -> Incident | None:
+        if "id 42" in result_text:
+            return Incident(kind="injection_suspected", detail="canary", tool=tool_name)
+        return None
+
+    provider = MockProvider(
+        [
+            MockTurn(tool_calls=[_call(stage_name="Nova Reyes")]),
+            MockTurn(text="Done.", match="[guardrail notice — injection_suspected: canary]"),
+        ]
+    )
+    runtime, sink = _runtime(provider)
+
+    result = await runtime.run(_agent(result_checks=(canary_check,)), "Who is Nova Reyes?")
+
+    assert result.status == "completed"
+    guardrail_spans = [s for s in sink.spans if s.kind == "guardrail"]
+    assert [s.attrs["kind"] for s in guardrail_spans] == ["injection_suspected"]
+    tool_span = next(s for s in sink.spans if s.kind == "tool_call")
+    assert tool_span.attrs["guardrail"] == "injection_suspected"
+    # The annotated result reached the model (the second turn's match proved it),
+    # prefixed but otherwise intact.
+    tool_msg = provider.calls[1].messages[-1]
+    assert tool_msg.role == "tool"
+    assert tool_msg.content.startswith("[guardrail notice — injection_suspected")
+    assert "artist Nova Reyes has id 42" in tool_msg.content
+    assert tool_msg.is_error is False
+
+
+async def test_trace_attrs_ride_into_run_meta() -> None:
+    provider = MockProvider([MockTurn(text="hi")])
+    runtime, sink = _runtime(provider)
+    await runtime.run(_agent(trace_attrs={"prompt_sha256": "abc123def456"}), "hello")
+    assert sink.runs[0].meta["prompt_sha256"] == "abc123def456"
+    assert sink.runs[0].meta["model"] == "mock-sonnet"

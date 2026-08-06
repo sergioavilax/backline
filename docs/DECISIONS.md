@@ -398,3 +398,113 @@ Judgment calls in `backline/tools/ledger.py` / `calc.py` that §4.3 left open:
 - Tools learn the proposing run via a `ContextVar` (`core/runcontext.py`) the runtime
   sets around each run — `staging.*_by_run` / `app.notes.created_by` stamping without
   widening the tool-handler signature.
+
+---
+
+## D-013 — Reconciler heuristics as deterministic tools; guardrails gain a flag-don't-block channel (Phase 4)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+**Context.** Phase 4's Reconciler workflow names "flag heuristics (tolerance rules
+per anomaly kind)" as a stage between calc and `submit_batch`, and §4.6 requires the
+injection defense to *flag* suspicious document content while the agent still sees
+it. Neither fits the Phase 2/3 guardrail shape (pre-execution checks that deny), and
+asking a model to re-derive 5%-tolerance arithmetic per run would make precision a
+matter of luck.
+
+**Decisions.**
+
+- **Tolerance rules live in a tool, not in prose**: `scan_anomalies(period,
+  statement_id?)` (`backline/tools/scan.py`) implements one deterministic rule per
+  §3.4 kind — duplicate `line_hash` within a statement (lowest id kept), unknown
+  ISRC vs catalog, currency vs the feed's dialect reference (world.yaml via
+  `datagen.config`, the D-012 precedent; GBP territories honored), negative
+  units/amounts, line-vs-statement period bleed, first-territory streaming lines at
+  ≥ 4x the track's median historical per-line units on that store (`SPIKE_FACTOR`),
+  and statement-vs-dashboard divergence beyond the configured 5% (aggregated by
+  *statement* period, anchored to the largest contributor — exactly how the
+  reference is built). Within-tolerance measurements are *reported, not flagged* —
+  the two seeded borderline cases fall below these thresholds by construction, and a
+  test pins exact set equality of `(kind, line_id)` against
+  `truth.anomaly_registry` across all 12 periods: 100% recall, zero extras. The
+  agent reviews candidates and owns the final flag list (it can drop, never
+  silently gain).
+- **Batch allocations are one tool call**: `compute_allocations(period, ...)` loops
+  `compute_ledger_slice` (the one engine, D-001) over every artist with reported
+  lines in the period under bounded concurrency (~7s for 149 artists), honors
+  per-source exclusions, and applies a **materiality floor** (`min_net_payable`,
+  default $0.01) — zero-payable (typically unrecouped) artists are counted and
+  aggregated, not listed, so `submit_batch` payloads stay reviewable and the
+  coverage stays visible. A test pins allocations == `truth.expected_ledger` for
+  every clean artist once registry exclusions are applied.
+- **Exclusions are per-source**: label and staged line ids are separate sequences
+  that can collide numerically, so `exclude_line_ids` (label) and a new
+  `exclude_staged_line_ids` flow through `calc_royalties`,
+  `compute_allocations`, and the ledger — an exclusion can never silently hit the
+  other source's line. (Latent Phase 3 wrinkle, fixed while the surface grew.)
+- **Guardrails gain `ResultCheck`** — post-execution policies over
+  `(tool_name, result_text)` that *flag without blocking*: the runtime records the
+  incident as a `guardrail` span, marks the tool span, and prefixes the result with
+  a one-line notice before the model sees it. The injection detector
+  (`backline/agents/injection.py`) registers here for `search_contracts` /
+  `read_clause` only (SQL/calculator output is label-controlled data, not
+  documents); its regex families (role/override markers, instruction overrides,
+  prompt/answer-key exfiltration, approval coercion) catch the seeded canary and,
+  by corpus sweep test, nothing else in all 2,961 chunks. Retrieval tools fence
+  quoted corpus text in `<document>` tags so the trust boundary is visible in every
+  transcript.
+
+**Alternatives rejected**: prompting the model to hand-write tolerance SQL per run
+(unreproducible precision, token-expensive); blocking suspicious documents outright
+(the §4.6 eval needs the model to *see and refuse*, and legal text can trip
+heuristics — flag-and-annotate degrades gracefully); a `label.stores`-style
+reference table for feed currencies (changes seeded content mid-phase for data the
+config already carries — same call as D-012).
+
+---
+
+## D-014 — Agent assembly conventions: text-protocol finalizers, two-run dispatch, prompt hashing (Phase 4)
+
+**Status**: accepted · **Date**: 2026-08-06
+
+Judgment calls in `backline/agents/` that BUILD_PLAN Phase 4 left open:
+
+- **Typed answers parse from the final text, not from a special tool.** The §4.2
+  termination contract (text turn without tool calls → `FinalAnswer`) stays
+  untouched: citations are extracted structurally (`FBR-[CA]-NNNNN §N` patterns,
+  deduped, order kept — the prompts require inline citations in exactly that
+  shape); a first line `ABSTAIN: <reason>` is the typed abstention; the
+  Reconciler ends with `BATCH: <id|none>` / `FLAGS: <summary>` lines parsed into
+  `ReconcilerAnswer(batch_id, flags_summary)` (a `FinalAnswer` subclass). T1/T2
+  scoring gets deterministic fields; a finalize-tool would have complicated the
+  loop for no scoring gain.
+- **Prompts are files; the hash is the version.** `backline/agents/prompts/*.md`
+  load verbatim as system prompts; each `AgentSpec` carries
+  `trace_attrs={"prompt_sha256": <12-hex>}` which the runtime merges into run meta
+  — eval results pin to prompt versions with zero templating. Dynamic context
+  (recalled notes) deliberately rides in the *user turn*, never the system prompt,
+  so the hash stays honest.
+- **The router is its own traced run.** `route()` makes one forced `route` tool
+  call (Haiku-class tier, `ROUTER_MODEL`) inside a run named `router` — front-door
+  cost and verdicts stay separately inspectable, and `route_and_run` produces two
+  runs per message (router + agent) by design. Below
+  `ROUTER_CONFIDENCE_THRESHOLD` (default 0.6) the decision downgrades to `clarify`
+  carrying the shadowed suggestion in `reason`; unparseable/missing tool calls
+  degrade to `clarify` with confidence 0 — the front door never guesses and never
+  crashes on model judgment (provider outages still raise).
+- **Note auto-recall is router-keyed and user-visible.** The router reports artist
+  names verbatim; dispatch resolves them (exact-first, misses skipped silently),
+  pulls up to 5 notes per artist, and prepends a fenced `<recalled_notes>` block to
+  the user message — what the model saw is exactly what the trace shows. Notes are
+  trusted-ish label data; user-spoofable fencing is acceptable at this trust
+  boundary and revisitable when sessions arrive (Phase 6).
+- **Model policy is three settings** (`PLANNER_MODEL`, `UTILITY_MODEL`,
+  `ROUTER_MODEL`) rather than per-agent env knobs; `build_agent(model=...)`
+  overrides exist for tests and the Phase 7 sweep. The Reconciler gets workflow
+  headroom in code (2x iterations/budget, 120s tool timeout for the batch
+  calculator, 4K-token results so allocation tables survive verbatim) — config
+  would multiply env vars for limits only one agent needs.
+- **Session-memory summarization stays put until Phase 6**: the §4.5 scope-1
+  summarizer hook exists since Phase 2, but sessions (and therefore a place to
+  construct them) arrive with the API — wiring the utility model in belongs there.
+  The §4.5 scope-3 tail (entity auto-recall) shipped here as planned.

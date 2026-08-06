@@ -19,6 +19,17 @@ class Settings(BaseSettings):
 
     rerank: str = "on"
 
+    # Model policy (§2, Phase 4): routing exists at two levels — agent selection
+    # (the router) and model selection (planner/utility tiers per agent). The
+    # planner drives agent loops (Sonnet-class); the utility model summarizes and
+    # compresses (Haiku-class); the router classifies with the cheap tier.
+    planner_model: str = "claude-sonnet-5"
+    utility_model: str = "claude-haiku-4-5"
+    router_model: str = "claude-haiku-4-5"
+    # Below this route confidence the router asks a clarifying question instead of
+    # guessing an agent (§2).
+    router_confidence_threshold: float = 0.6
+
     # Retrieval stack (§4.4). "hash" selects the deterministic offline embedder
     # (feature-hashed bag-of-words, 384-dim) used by tests and model-less environments;
     # "lexical" is the analogous offline reranker. Both real models run CPU-side via
