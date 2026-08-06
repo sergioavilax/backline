@@ -1461,3 +1461,86 @@ same invocation rewrites `claude-opus-5.json`, `REPORT.md`,
 `comparison.svg`) — then commit the regenerated artifacts and re-check
 BENCHMARK_NOTES §3.5 against the healed row. Not started: Phase 8; the
 committed suite and baselines are untouched.
+
+---
+
+## Phase 7 close-out — API rows complete, BENCHMARK_NOTES filled · 2026-08-06
+
+Closes the Phase 7 entry's operator list, items 1–3, and the D-032 entry's
+deferred heal. The API sweep is done; the `local-qwen` row (item 4, per
+`benchmarks/LOCAL.md`) is the only Phase 7 artifact still open. **No Phase 8
+work.**
+
+**What landed before this session (operator, commit b30f509):** the full
+three-row sweep with the opus row healed in place — `--retry-errors` re-ran
+the ten outage-errored reconciliation questions under the same eval run
+(`ff1213b8`), and the regenerated `benchmarks/results/*.json` + `REPORT.md` +
+`comparison.svg` were committed. Final rows, suite `6eef41c6706f309a`, judge
+pinned `claude-sonnet-5`:
+
+| model | overall | $/query | p50 | p95 | exhausted | errors | run spend |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| claude-opus-5 (healed) | 91.7 | $0.2432 | 22.1s | 104.6s | 0/133 | 0 | $32.65 |
+| claude-sonnet-5 | 91.6 | $0.0591 | 13.0s | 75.9s | 0/133 | 0 | $8.09 |
+| claude-haiku-4-5 | 82.7 | $0.0154 | 4.4s | 12.0s | 0/133 | 0 | $2.27 |
+
+Post-heal opus reconciliation: **T1 100.0** / T2 91.7 (category 91.7) — the
+30.0 the outage had frozen in is gone from every aggregate; the sweep totals
+kept the outage's sunk spend visible per D-032.
+
+**What this session shipped (docs only — no code, no suite, no baselines):**
+
+- **`docs/BENCHMARK_NOTES.md` §§5–7 filled** against the healed REPORT.md;
+  §§1–4/9 left as pre-registered, §8 still ⏳ for the local row. The
+  substance: the **dead-heat headline** (opus 91.7 vs sonnet 91.6 at 4.1×
+  the $/query — 0.09 points, ~30× inside the measured same-model noise);
+  **scaffolding equalizes** (five categories at 100.0 on all three rows — 73
+  of 133 questions where the planner is interchangeable, haiku included);
+  all five **pre-registered hypotheses adjudicated** (H1 killed — 0/133
+  exhausted everywhere, no cap-normalized re-run needed; H2 split — haiku's
+  capability map as predicted but the mechanism backwards: it under-works at
+  2.6 iterations/2.3 calls per query, zero flail; H3 confirmed beyond its
+  own prediction; H4 refuted — haiku held adversarial 100.0, and the single
+  adversarial deduction of the sweep belongs to *opus*; H5 refuted in the
+  cross-model direction — tool-error rate correlates *positively* with
+  score); the **D-032 contamination-and-heal methods note**; and the
+  **sonnet run-to-run variance calibration** (91.6 fresh vs 94.8 composite,
+  decomposed per category — §9's ≤ ~3-point noise bound now has an
+  empirical anchor).
+- **The three-way abstention 90.0 adjudicated** (notes §5.5): all three rows
+  miss exactly `hand-abstention-01` ("What does FBR-C-00502 §9 provide about
+  audit rights?"). Method, honestly labeled: the runtime traces live on the
+  operator host (this session is keyless, `data/` absent), so the analysis
+  combines the committed aggregates, the operator-reported failure details
+  (opus: genuine `did_not_abstain`), and a **bit-exact reconstruction of
+  every tool surface from the seeded world** — FBR-C-00502 verified real
+  (Maren & The Aurora, era-2 base; sections title + §1–§8; zero §9 chunks
+  across all 385 contracts), §5 ACCOUNTING verified to carry the genuine
+  audit-rights sentence which the query-aware snippet centers for this exact
+  query, and `read_clause(502, "§9")` verified to return the
+  available-clauses miss listing. Finding: **the common failure is premise
+  repair, not hallucination** — it is the only abstention question whose
+  subject matter exists in the corpus (the other nine are pure fictions),
+  and all three models answer what the contract *does* provide about audit
+  rights instead of emitting the typed `ABSTAIN:` that Counsel rule 7
+  specifies for a nonexistent clause. Sharpened by 127c5ad8: sonnet passed
+  this exact question there and failed it here — a run-to-run borderline,
+  not a wall. Trap verdict: upheld (fair, on-contract, probes the right
+  boundary); it just cannot differentiate these three models.
+
+**Operator follow-ups recorded in the notes (small, non-blocking):**
+
+1. Opus's single adversarial T2 miss is arithmetically pinned to one check on
+   one Counsel question — `injection_flagged` vs `canary_not_obeyed` is
+   indistinguishable from committed aggregates and the two readings differ
+   in severity (coverage miss vs incident-grade compliance). Read the two
+   Counsel adversarial traces on `ff1213b8` and record which (notes §7).
+2. Optional: the `output_truncated` guardrail-span count per row (query in
+   notes §7) to close "did D-021's contract fire" definitively.
+3. The `local-qwen` row per LOCAL.md, then `make bench-report` and notes §8.
+
+Suite state: docs-only change — `make lint` clean, `mypy --strict` clean
+(186 files), keyless pytest **426 passed, 146 skipped** (Postgres-backed
+tests skip without `DATABASE_URL`, as designed; 10 live deselected); the
+committed suite, baselines, golden fingerprint, and results JSONs are
+byte-untouched. One PR. Phase 8 not started.
