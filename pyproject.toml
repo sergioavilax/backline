@@ -15,13 +15,14 @@ dependencies = [
     "pyyaml>=6.0",
     "reportlab>=4.2",
     "tiktoken>=0.8",
+    "anthropic>=0.120",
+    "httpx>=0.27",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
-    "httpx>=0.27",
     "ruff>=0.6",
     "mypy>=1.11",
     "hypothesis>=6.100",
@@ -66,3 +67,10 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# `live` tests hit the real Anthropic API and cost money; they are excluded by default
+# and run manually via `uv run pytest -m live` (BUILD_PLAN Phase 2 DoD). A later -m on
+# the command line overrides this default.
+addopts = '-m "not live"'
+markers = [
+    "live: hits the real Anthropic API (needs ANTHROPIC_API_KEY; run manually with -m live)",
+]

@@ -1,0 +1,47 @@
+# Model registry: provider, context window, and USD list price per 1M tokens.
+# The CostMeter prices every call from this table; the Phase 7 benchmark derives
+# $/query from actual token usage × these numbers. Edit prices here, not in code.
+#
+# Prices are QUOTED STRINGS so they load as exact Decimals — money is never float
+# (invariant 1); the registry rejects bare floats at load time.
+#
+# Anthropic list prices as of 2026-08 (claude-sonnet-5 has intro pricing through
+# 2026-08-31; the standing sticker price is recorded here so cost numbers stay
+# comparable across the build).
+models:
+  claude-opus-5:
+    provider: anthropic
+    context_window: 1000000
+    usd_per_mtok_in: "5.00"
+    usd_per_mtok_out: "25.00"
+  claude-sonnet-5:
+    provider: anthropic
+    context_window: 1000000
+    usd_per_mtok_in: "3.00"
+    usd_per_mtok_out: "15.00"
+  claude-haiku-4-5:
+    provider: anthropic
+    context_window: 200000
+    usd_per_mtok_in: "1.00"
+    usd_per_mtok_out: "5.00"
+
+  # Local model via any OpenAI-format endpoint (vLLM on the 4090 rig, Phase 7).
+  # Electricity is free at this scale; $/query for the local row is honest zero.
+  local-qwen:
+    provider: openai_compat
+    context_window: 8192
+    usd_per_mtok_in: "0"
+    usd_per_mtok_out: "0"
+
+  # Deterministic test models: MockProvider turns priced like their real-tier
+  # counterparts so budget/cost tests exercise real arithmetic without a key.
+  mock-sonnet:
+    provider: mock
+    context_window: 200000
+    usd_per_mtok_in: "3.00"
+    usd_per_mtok_out: "15.00"
+  mock-haiku:
+    provider: mock
+    context_window: 200000
+    usd_per_mtok_in: "1.00"
+    usd_per_mtok_out: "5.00"
