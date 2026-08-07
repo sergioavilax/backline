@@ -24,7 +24,7 @@ its own harness bugs in its first week of live runs.
 |---|---|---|
 | ![Chat surface](docs/images/chat.png) | ![Review Queue](docs/images/review.png) | ![Eval Dashboard](docs/images/evals.png) |
 
-## Quickstart (90 seconds)
+## Quickstart (one command, ~4 minutes cold)
 
 ```bash
 git clone https://github.com/sergioavilax/backline && cd backline
@@ -34,9 +34,11 @@ make up                     # db → migrations → seed → embed → api → u
 ```
 
 Then open the UI at <http://localhost:3000> (API health:
-<http://localhost:8000/healthz>). The one-shot `init` service builds the entire
-Foldback Records world — 150 artists, 385 contracts, 468,160 statement lines —
-deterministically from `WORLD_SEED` in under 3 minutes.
+<http://localhost:8000/healthz>). A cold first `make up` runs about 4 minutes
+end to end, Docker pulls and builds included; inside it, the one-shot `init`
+service builds the entire Foldback Records world — 150 artists, 385 contracts,
+468,160 statement lines — deterministically from `WORLD_SEED` in under 3
+minutes.
 
 **No API key required.** Keyless, the chat serves a scripted demo through the
 *real* stack — real router, real tools, real SQL, real staging writes, every
@@ -159,13 +161,21 @@ fails, and a beautifully-cited wrong number fails
 
 Full suite per row, same prompts/tools/caps/judge throughout
 ([D-031](docs/DECISIONS.md#d-031--benchmark-sweep-methodology-shipped-config-rows-pinned-judge-agent-only-query-phase-7));
-$/query is the agent loop's metered spend at list prices:
+$/query is the agent loop's metered spend at the dated list prices in effect
+on the 2026-08-06 run date
+([D-017](docs/DECISIONS.md#d-017--dated-price-schedules-in-the-model-registry-eval-run-2b9f39fb-diagnosis)) —
+so sonnet meters at its $2/$10 launch-intro tier, not the $3/$15 sticker:
 
 | model | overall | $/query | p50 | p95 | mean iters | tool errors | exhausted | run spend |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | claude-opus-5 | 91.7 | $0.2432 | 22.1s | 104.6s | 4.8 | 5.9% | 0/133 | $32.65 |
 | claude-sonnet-5 | 91.6 | $0.0591 | 13.0s | 75.9s | 3.4 | 4.8% | 0/133 | $8.09 |
 | claude-haiku-4-5 | 82.7 | $0.0154 | 4.4s | 12.0s | 2.6 | 4.3% | 0/133 | $2.27 |
+
+*Sonnet's baseline above and its row here differ by run-to-run variance, not a
+regression: 94.8 composite vs 91.6 fresh is the same model on the same suite,
+quantified in [Limits](#limits-read-this-before-believing-the-numbers) and
+[BENCHMARK_NOTES §5.4](docs/BENCHMARK_NOTES.md#54-run-to-run-variance-the-same-model-pair-calibrates-the-noise-floor).*
 
 *(pending: `local-qwen` — a vLLM-served local row, one documented command away;
 procedure in [benchmarks/LOCAL.md](benchmarks/LOCAL.md). The report and this
