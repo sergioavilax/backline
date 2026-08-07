@@ -1544,3 +1544,187 @@ Suite state: docs-only change — `make lint` clean, `mypy --strict` clean
 tests skip without `DATABASE_URL`, as designed; 10 live deselected); the
 committed suite, baselines, golden fingerprint, and results JSONs are
 byte-untouched. One PR. Phase 8 not started.
+
+---
+
+## Phase 8 — README, Docs, Publish · 2026-08-07
+
+Session prompt: a warm-up edit (below), then execute Phase 8 exactly
+(BUILD_PLAN §7 Phase 8). No Phase 9 work.
+
+**Warm-up (operator-requested, before the phase): the opus adversarial T2
+miss is a checker false positive.** Operator trace adjudication (run
+`ff1213b8`, `hand-adversarial-02`) resolved the §7 follow-up left open by the
+Phase 7 close-out: the failed check is `canary_not_obeyed`, and the deduction
+belongs to the *check*, not the model — the phrase-check's marker
+`"i have approved"` (naive, negation-unaware substring matching over the
+reply) matched inside the explicit denial "I have approved nothing and
+disclosed no internal data." The answer itself fully refused the injection,
+explained the canary's non-contractual nature, and recommended a
+data-integrity review. Recorded in `docs/BENCHMARK_NOTES.md` §7 as a
+resolution note in the document's own style: no incident, no D-entry
+warranted, adversarial *compliance* clean on all three rows. Per instruction
+and the frozen-suite discipline, neither the checker nor any committed score
+changed — the marker fix is deferred to the next deliberate suite-maintenance
+pass alongside the frozen `_pct_str` (D-028/D-029/D-030).
+
+**Shipped**
+
+- **README.md** — the Phase 8 front door, replacing the Phase 0 stub: hero
+  (what/why in three sentences, the live-trace screenshot, a three-surface
+  gallery), 90-second quickstart (keyless demo mode called out; the
+  `emit-period` demo arc), architecture diagram + `docs/ARCHITECTURE.md`
+  pointer, the synthetic-world scale story with the corpus math, the results
+  section (composite live baseline 94.8 with per-category table; the healed
+  three-row model sweep with the dead-heat headline — opus 91.7 vs sonnet
+  91.6 at 4.1× $/query — and the pending `local-qwen` line pointing at
+  `benchmarks/LOCAL.md` per the degrade-gracefully rule; the frontier chart;
+  the retrieval-scoping table with the unscoped MRR 0.000 collapse; the
+  four-harness-bugs eval-detour story with zero agent hallucinations),
+  design-tradeoffs paragraphs each linking their DECISIONS entries, evals &
+  CI section, traceability pointer, an honest LIMITS section (synthetic
+  world both easier and harder than real; one run per row with the measured
+  3.2-point same-model noise; judge family bias; B0/B1 live rows not
+  purchased; single-node scope and what production would add), repo map,
+  development commands, MIT license.
+- **docs/ARCHITECTURE.md** — the deeper tour: provider layer, runtime-loop
+  semantics (truncation contract, empirically sized per-agent limits), the
+  §4.3 tool matrix with the Phase 4 additions, layered guardrails, memory
+  scopes, agents/router, the RAG pipeline stage diagram, the five-schema
+  data model with trust boundaries, HITL promotion, tracing/cost, API + UI
+  (22 committed OpenAPI paths), the eval architecture, benchmarks, and the
+  determinism/reproducibility spine. Every section links its decisions.
+- **tests/test_docs.py** — 16 doc-pinning tests (D-033 records the binding
+  rules): every relative link and GitHub-slug anchor in README/ARCHITECTURE
+  resolves; the tool list matches `_TOOL_SETS` (count and names, both docs);
+  the agent list matches `AGENT_NAMES`; suite size/categories match the
+  committed `core.json`; contract counts (385 = 301 base + 84 amendments)
+  recompute from the golden fingerprint's file listing; the sweep table
+  matches the committed results JSONs cell-for-cell (9 columns × 3 rows);
+  the baseline table matches `baseline.json` with the weighted overall
+  recomputed from suite counts; the retrieval table matches the PHASE_LOG
+  real-model probe record; world-scale and corpus claims must carry
+  provenance in this log; the pending-local-row note is enforced until
+  `local-qwen.json` lands (then the check retires itself); README `make`
+  commands name real targets; the ARCHITECTURE path count matches
+  `openapi.json`; LICENSE is MIT and linked.
+- **LICENSE** — MIT, matching the `license = { text = "MIT" }` pyproject has
+  carried since Phase 0.
+
+**Corpus math (the README's scale claim).** Exact count, operator-run on the
+dev machine (tiktoken's o200k_base encoding needs one network fetch this
+sandbox's egress denies — same class as the Phase 1/3 blocks):
+`make corpus-tokens` reports **14.1M tokens = 70.5× a 200,000-token context
+window**. Sandbox verification of everything derivable offline: the corpus
+renders byte-deterministically without a DB (385 contract PDFs + txt
+sidecars, 72 inbox drops), and the labeled estimate path reports 7,393,421
+bytes/4 tokens = 37.0× (Phase 1's paste read 7,393,564 before the
+D-029/D-030 wording-only re-renders; statements are byte-identical at
+7,104,659 — the 143-token drift is exactly the contract wording fixes). The
+~1.9× estimate-to-exact gap is the digit-dense statement CSVs: bytes/4
+undercounts numeric text. The README claims the exact number; `test_docs`
+pins README ↔ this log's agreement on it.
+
+**Verified**
+
+- Full suite against Postgres 16.14 + pgvector 0.8.1 (built from source in
+  this sandbox, cluster booted locally): see suite-state line below —
+  includes the 16 new doc tests and every Phase 1–7 suite; world
+  fingerprint, committed eval suite, baselines, and results JSONs
+  byte-untouched.
+- `make lint` / `make typecheck` (mypy --strict) clean with the new test
+  module in scope.
+- Doc-test teeth verified during development: the corpus-provenance test
+  failed until this entry recorded the 14.1M figure, and the make-target
+  test caught prose ("make clause chunking easy") masquerading as a command
+  reference — both fixed by tightening, not weakening, the checks.
+
+**Deviations / notes**
+
+- **Trace GIF deferred to the operator.** BUILD_PLAN's hero names "UI
+  screenshot + trace GIF"; recording a GIF needs the live compose stack and
+  a screen recorder, neither of which exists in this sandbox. The README
+  hero uses `docs/images/trace-live.png` (captured mid-run in Phase 6, amber
+  pulse visible); swapping in a GIF is a one-line README change when
+  recorded.
+- **B0/B1 live rows were never purchased**, so BUILD_PLAN §5.3's
+  "accuracy-by-category across B0/B1/platform" headline chart cannot be
+  drawn honestly. The README says exactly that in LIMITS and uses the
+  retrieval probe's unscoped collapse as the measured stand-in; the B0/B1
+  harness itself runs keylessly in every PR's smoke. A live B0/B1 run
+  remains available to any future session with a key and a budget.
+- The GitHub-settings half of repo hygiene (topics, social preview image,
+  visibility) is operator action by nature — listed below rather than
+  silently dropped. `docs/images/trace-live.png` is the suggested social
+  preview source.
+
+**Remaining (operator actions, recorded per the deferred-live-artifact
+protocol):**
+
+1. **Cold-machine clone test** (DoD): fresh `git clone` → `cp .env.example
+   .env` → `make doctor` → `make up` on a machine that has never built this
+   repo; paste the timing here. (CI's `e2e-smoke` boots the identical stack
+   shape from scratch on every PR, so regressions are covered between
+   manual runs.)
+2. **Repo public + topics + social preview** (GitHub settings): suggested
+   topics — `ai-agents`, `llm`, `rag`, `evals`, `postgres`, `pgvector`,
+   `fastapi`, `nextjs`, `anthropic`, `music-industry`; social preview from
+   `docs/images/trace-live.png`.
+3. **Trace GIF** for the hero (screen-record the Trace Inspector during
+   `make emit-period PERIOD=2026-07` + a reconcile ask), then swap the hero
+   image.
+4. **Portfolio-site SQL insert** — prepared as a follow-up task outside this
+   repo, per the DoD's own wording.
+5. Standing items unchanged from earlier phases: the `local-qwen` sweep row
+   (`benchmarks/LOCAL.md`, then `make bench-report` + BENCHMARK_NOTES §8),
+   and the `(claude-sonnet-5, platform, gate)` CI baseline entry (a ~$5
+   `--gate-subset` run + `--write-baseline`), which bootstrap-passes until
+   recorded.
+
+**Final retrospective (BUILD_PLAN Phase 8's closing requirement).**
+
+Eight phases plus five inter-phase diagnosis arcs, 2026-08-05 → 2026-08-07,
+one PR each. The eight §0 invariants held end-to-end without exception:
+money never floated (Decimal/NUMERIC through one rounding policy — including
+API spend); royalty math has exactly one implementation proven from both
+sides (truth engine and runtime tool reproduce the answer key to the
+microdollar); no agent can read `truth` (parser-level, canary-tested, and a
+T2 violation even to *attempt*); the world is a pure function of one seed
+(three committed fingerprints — world, suite, prompts — caught every drift);
+every write is gated behind human approval (the promotion path is a review
+action, asserted no-agent-path-exists); every LLM call is a traced, metered
+span through a Provider; phases stayed additive; and no test ever needed an
+API key.
+
+What the build demonstrated, in one line each:
+
+- **The eval harness paid for itself in week one**: four harness bugs
+  (D-017 pricing, D-019 budget-gate blindness, D-020 guessed caps, D-021
+  truncation handling) found by live runs, adjudicated from traces, fixed
+  with regression tests — and zero agent hallucinations anywhere in the
+  adjudicated record. First live 84.9 became a defensible composite 94.8
+  (D-023) by fixing the *measurement*, never the measured.
+- **Scaffolding equalizes**: five categories at 100.0 across a 16× price
+  range (the sweep's structural finding); model choice is a routing
+  decision on this platform, and the money categories are carried by
+  retrieval scoping + the one engine + typed tools, not by planner size.
+- **Structure beats similarity where it matters**: governing-scoped
+  retrieval at MRR 0.398 vs 0.000 unscoped — the flagship tradeoff (D-002)
+  measured, not argued.
+- **Honesty is load-bearing infrastructure**: dated prices so the meter
+  matches the invoice, quarantined infra errors so outages can't wear a
+  model costume (D-032), exhaustion counts published next to every score,
+  pre-registered hypotheses adjudicated in public (H1 killed, H4 refuted —
+  including against the sweep's own headline model), and a README whose
+  claims fail CI when they drift (D-033).
+
+The repo closes Phase 8 at 588 tests, a 133-question answer-keyed suite
+gating CI keylessly on every PR, three committed live benchmark rows, and a
+front door that pins every number it advertises. Phase 9 (AWS epilogue)
+remains optional and unstarted.
+
+Suite state: **588 passed, 10 deselected (live)** in 220s against Postgres
+16.14 + pgvector 0.8.1 (built from source, local cluster) with the seeded
+world — 16 new doc tests included; ruff and `mypy --strict` clean (187
+files); world fingerprint, committed suite, baselines, and results JSONs
+byte-untouched. One PR.

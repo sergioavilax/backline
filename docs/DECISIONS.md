@@ -1449,3 +1449,53 @@ provider outages are visible everywhere downstream (‡), excluded from accuracy
 everywhere, and cheap to heal — they can no longer masquerade as model
 incapability. Pre-D-032 summaries (no `errors` key) read as clean; the remedy
 for a pre-D-032 contaminated artifact is the heal itself.
+
+## D-033 — Doc claims bind to committed artifacts or recorded provenance (Phase 8)
+
+**Status**: accepted · **Date**: 2026-08-07
+
+**Context.** BUILD_PLAN Phase 8 wants the README's claims pinned by test
+("claims must pin to code", `tests/test_docs.py`). Some claims are
+mechanically derivable from committed artifacts; others are measurements CI
+deliberately cannot reproduce — the exact o200k corpus count needs
+tiktoken's one network fetch (denied in sandboxes and pointless in keyless
+CI), world row counts need a seeded database, and the retrieval-probe
+numbers need the real embedding models. A doc test that re-measured those
+would violate the keyless discipline; a doc test that skipped them would
+let exactly the flashiest numbers rot.
+
+**Decisions.**
+
+- **Two binding classes, nothing in neither.** *Derivable* claims recompute
+  from committed artifacts and drift fails CI: tool list/count from
+  `_TOOL_SETS`, agents from `AGENT_NAMES`, suite size/categories from
+  `core.json`, contract counts from the golden fingerprint's file listing,
+  sweep cells from `benchmarks/results/*.json`, baseline cells and the
+  weighted overall from `baseline.json` × suite counts, API path count from
+  `openapi.json`, `make` references from the Makefile. *Measured* claims
+  (corpus tokens, world row counts, probe numbers) must appear verbatim in
+  PHASE_LOG — the build record is their provenance — and README ↔ PHASE_LOG
+  disagreement fails CI. Editing a measured claim therefore requires
+  updating the build record in the same PR, which is where its provenance
+  belongs anyway.
+- **Anchors are validated with GitHub's slug algorithm** (non-word chars
+  dropped, spaces to hyphens, duplicates suffixed), so deep links into
+  DECISIONS.md cannot silently rot when headings change.
+- **Internal arithmetic is asserted where it exists**: the corpus multiple
+  must equal tokens ÷ window; the baseline overall must equal the
+  suite-weighted category mean.
+- **The degrade-gracefully rule is enforced, then retires itself**: while
+  `benchmarks/results/local-qwen.json` is absent, the README must present
+  the API rows and name the pending row with its LOCAL.md procedure; once
+  the row lands, the check stands down and the pending note may go.
+
+**Alternatives rejected.** Re-measuring in CI (network in tests breaks the
+keyless invariant, and the offline estimate path would pin a *different*
+number than the README claims); freezing expected numbers in a test fixture
+(a second copy to drift — the committed artifacts already are the fixture);
+exempting measured numbers (exactly how READMEs rot).
+
+**Consequence.** The README can only say what the repo can back: every
+number is either recomputed on every PR or traceable to a dated entry in
+the build record. The cost is honest friction — updating a screenshot-level
+claim means telling PHASE_LOG where it came from.
