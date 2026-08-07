@@ -251,6 +251,23 @@ def test_readme_baseline_overall_is_the_weighted_mean() -> None:
     assert entry["model"] in README
 
 
+def test_readme_same_model_variance_pair_matches_artifacts() -> None:
+    # The sweep-table footnote and the Limits bullet both quantify the sonnet
+    # composite-vs-fresh pair; composite, fresh, and their spread must
+    # recompute from the committed artifacts (D-033: derivable claims
+    # drift-fail — a moved baseline may not leave a stale variance story).
+    counts: dict[str, int] = _suite()["counts"]
+    categories: dict[str, float] = _live_baseline()["categories"]
+    composite = sum(categories[c] * n for c, n in counts.items()) / sum(counts.values())
+    fresh: dict[str, Any] = json.loads(
+        (ROOT / "benchmarks" / "results" / "claude-sonnet-5.json").read_text(encoding="utf-8")
+    )
+    pair = f"{_fmt1(composite)} composite vs {_fmt1(fresh['overall_score'])} fresh"
+    assert README.count(pair) >= 2, f"footnote and Limits must state the pair as {pair!r}"
+    spread = Decimal(_fmt1(composite)) - Decimal(_fmt1(fresh["overall_score"]))
+    assert f"{spread} overall points" in README, "Limits must quantify the same-model spread"
+
+
 def test_readme_retrieval_table_matches_phase_log_probe() -> None:
     # The probe numbers are a recorded live measurement (PHASE_LOG, real-model
     # run); the README table must repeat them exactly, mode for mode.
