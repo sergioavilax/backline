@@ -2166,3 +2166,62 @@ answer-keyed suite executed on ECS/RDS and scored within 0.8 points of the same
 suite on the homelab, and a strict gate that failed both runs and was reported
 rather than re-rolled. The deployment is meant to be destroyed; the repo is the
 artifact.
+
+### A6 closing note — post-teardown, 2026-08-08
+
+The operator ran `terraform destroy`; it completed in one pass, which is what the
+V13 flags (`force_delete` on both ECR repos, `force_destroy` on the bucket,
+`recovery_window_in_days = 0` on both secrets) were set at the start to buy. Three
+things came out of closing the loop, all recorded in `deploy/aws/README.md`.
+
+**Infrastructure cost, computed rather than read off a bill.** The stack lived
+**~2.5–3 hours** (apply ~02:45 PDT, destroy ~04:30–05:00 PDT), not the ~12 the
+estimate assumed. At the §8 rates the live burn is $0.127/hr — Fargate api $0.0760
++ ui $0.0123 + ALB ~$0.0225 + RDS ~$0.016 — giving $0.32–0.38, plus ~$0.02 for the
+11 m 48 s eval task and pennies of ECR/Secrets/S3/transfer: **≈ $0.40–0.45 against
+the $2.20 estimate.** The useful reading is not "5× under budget": the per-hour
+pricing in §8 was accurate, and the *lifetime* assumption was 4× conservative. API
+spend remains the dominant and exactly-known number at **$15.89**, roughly 35× the
+servers. Fargate has no free tier, so a small line item will appear in billing with
+hours of lag; day-of Cost Explorer was blank when the screenshot was taken, and a
+corroborating capture can be added when it populates.
+
+**Two teardown lessons, plus one own-goal.**
+
+1. *The tag-scan proof does not work as specified.* §A6.3's
+   `resourcegroupstaggingapi get-resources --tag-filters Key=Project,Values=backline`
+   returns six ARNs after a clean destroy — the tagging index retains deleted ECS
+   service records (both services read `INACTIVE`) and deregistered task-definition
+   revisions. The authoritative check is per-service, and all ten came back empty:
+   `list-clusters`, `list-task-definitions --status ACTIVE`, `describe-db-instances`,
+   `describe-load-balancers`, `describe-vpcs` (non-default), `describe-repositories`,
+   `list-secrets`, `describe-security-groups` by tag, `describe-log-groups`, and the
+   service status query itself. Captured verbatim in
+   `deploy/aws/evidence/teardown-proof.txt`.
+2. *Resource tags are not cost-filterable unless activated first.* Cost Explorer
+   will not filter on `Project` until it is activated as a cost-allocation tag in
+   Billing, and activation is not retroactive. It never was, so attribution fell
+   back to service-level filtering — unambiguous here only because the material
+   services (Fargate/ECS, ALB, RDS, ECR, Secrets Manager) had no prior usage in the
+   account. S3 and CloudWatch *did* have prior usage; their deploy share is pennies.
+   On an account with existing ECS or RDS workloads the tags would have been
+   decorative.
+3. *`force_destroy` deleted the evidence bucket.* `backline-evidence-675362625117`
+   is a Terraform-managed resource, so destroy took it and its contents — the eval
+   artifacts and the 24 MB migration dump archived in A3. `aws s3 ls` now returns
+   `NoSuchBucket`. Nothing was lost only because the artifacts were also committed
+   to the repo. The plan treated S3 as the durable archive and the repo as the
+   convenience copy; that was backwards, since the bucket sat inside the blast
+   radius of the command the plan ends with. Named in the writeup as a design error
+   rather than smoothed over.
+
+**Evidence completeness.** `deploy/aws/evidence/` now also carries
+`local-control-summary.json` (the parity table's other half — it was previously
+only under `data/evals/<run-id>/`, i.e. only on one machine) and
+`teardown-proof.txt`. A checker confirms every path the README's evidence table
+references both exists and is tracked by git — eight of eight — and that no file in
+`evidence/` is unreferenced. That check is the one that would have caught the
+S3-only archive being a single point of failure.
+
+No AWS resource was created, modified, or deleted in this session; every call was a
+read-only `describe`/`list`.

@@ -180,17 +180,33 @@ happen — p50 latency on AWS was actually **170 ms faster** than local, with p9
 
 ## Evidence
 
+Every number in the parity table above is reproducible from the two summary files
+below — they are the inputs, not illustrations of the output.
+
 | File | What it shows |
 |---|---|
-| `evidence/aws-run-summary.json` | The AWS run's summary row, pulled from `app.eval_runs` in RDS |
-| `evidence/evals-dashboard-aws-run.png` | The deployed Eval Dashboard showing the AWS run beside local history |
-| `evidence/trace-inspector-aws-eval.png` | The Trace Inspector on the AWS eval run — spans, tokens, cost |
-| `evidence/cloudwatch-gate-output.png` | The rendered summary table and gate verdict in CloudWatch Logs |
-| `evidence/ecs-eval-task-stopped.png` | The stopped eval task: 42 s pull, 11 m 48 s runtime, exit code 1 |
-| `evidence/billing-day-of.png` | Billing console, day of |
+| [`evidence/aws-run-summary.json`](evidence/aws-run-summary.json) | The AWS run's summary row, pulled from `app.eval_runs` in RDS |
+| [`evidence/local-control-summary.json`](evidence/local-control-summary.json) | The local control run's summary — the other half of the parity table |
+| [`evidence/evals-dashboard-aws-run.png`](evidence/evals-dashboard-aws-run.png) | The deployed Eval Dashboard showing the AWS run beside local history |
+| [`evidence/trace-inspector-aws-eval.png`](evidence/trace-inspector-aws-eval.png) | The Trace Inspector on the AWS eval run — spans, tokens, cost |
+| [`evidence/cloudwatch-gate-output.png`](evidence/cloudwatch-gate-output.png) | The rendered summary table and gate verdict in CloudWatch Logs |
+| [`evidence/ecs-eval-task-stopped.png`](evidence/ecs-eval-task-stopped.png) | The stopped eval task: 42 s pull, 11 m 48 s runtime, exit code 1 |
+| [`evidence/billing-day-of.png`](evidence/billing-day-of.png) | Billing console, day of — account-wide and pre-lag; see [Cost](#cost-estimate-vs-actual) for why it is not the actual |
+| [`evidence/teardown-proof.txt`](evidence/teardown-proof.txt) | Post-destroy verification: the tag scan and the ten per-service checks that supersede it |
 
-All of the above are also archived to `s3://backline-evidence-675362625117/evals/`,
-alongside the migration dump at `migration/backline.dump`.
+Reproduce either run's table from its summary:
+
+```bash
+uv run python -m evals report --summary deploy/aws/evidence/local-control-summary.json
+uv run python -m evals report --summary deploy/aws/evidence/aws-run-summary.json
+```
+
+**This directory is the only surviving copy.** These artifacts were also archived to
+`s3://backline-evidence-675362625117/evals/` during A5–A6, alongside the 24 MB
+migration dump — and `terraform destroy` deleted that bucket, because it is a
+Terraform-managed resource with `force_destroy = true`. `aws s3 ls` on it now
+returns `NoSuchBucket`. Nothing was lost, but only because these files were
+committed here too; see [Teardown lesson 3](#teardown-and-three-things-it-taught).
 
 **The ECS lifecycle, read off the console:** image pull completed in **42 seconds**
 for a ~4 GB image — the baked model weights earning their place, since a cold
@@ -225,8 +241,13 @@ would have produced a plausible-looking run with meaningless retrieval.
 `python -m backline.db.migrate` was deliberately **not** run against RDS. The dump
 carries `schema_migrations`, so migrating would be a no-op; the ivfflat index and
 its `ANALYZE` travel inside the dump too, so there was no re-embed and no re-index.
-The dump is archived at `s3://backline-evidence-675362625117/migration/backline.dump`
-as provenance for exactly this claim.
+The dump was archived to
+`s3://backline-evidence-675362625117/migration/backline.dump` as provenance for
+exactly this claim — and then `terraform destroy` deleted that bucket along with the
+rest of the stack. The dump is not in git either (24 MB, gitignored). What survives
+is this verification table and the counts in the A3 PHASE_LOG entry; see
+[Teardown lesson 3](#teardown-and-three-things-it-taught) for why the archive was
+inside the blast radius of the teardown, which is a design error worth naming.
 
 **One §0.4 number moved.** V7 measured `pg_dump -Fc` at 17 MB; the actual dump was
 **24 MB** (and the database 136 MB against V7's 130 MB). The cause is measured, not
@@ -373,19 +394,119 @@ Measured API spend is exact and is the larger number: **$7.880494 + $8.007034 =
 $15.89** across both runs, comfortably inside the $20 budget on each and needing no
 `--yes` override.
 
-The infrastructure actual is the one number this writeup will not pretend to have
-nailed. The day-of billing screenshot shows a month-to-date figure of **$1.57**,
-but it is not a clean actual for two reasons worth stating plainly: it is
-**account-wide rather than tag-filtered**, so it includes unrelated pre-existing
-services visible in the same breakdown (S3, Amplify, Glue, DynamoDB); and **AWS
-billing lags by hours**, so a same-day screenshot systematically *understates* a
-day whose Fargate, ALB, and RDS charges are still landing. A clean estimate-vs-
-actual needs the next-morning check against `Project = backline` — which is the
-operator's step, and the AWS Budget at $25 is the backstop either way. The
-`Ephemeral = true` tag on every resource exists so that check is one filter, not an
-archaeology session.
+The infrastructure actual is computed from lifetime rather than read off a bill,
+because the stack existed for **~2.5–3 hours** — `apply` completed around 02:45 PDT
+and `destroy` ran between 04:30 and 05:00 PDT on 2026-08-08 — not the ~12 hours the
+estimate assumed:
 
-Leaving the stack up would cost roughly $3.20/day. Don't; the artifact is the repo.
+| component | §8 rate | ~2.5–3 h |
+|---|---|---:|
+| Fargate api (1 vCPU / 8 GB) | $0.0760/hr | $0.19–0.23 |
+| Fargate ui (0.25 vCPU / 0.5 GB) | $0.0123/hr | $0.03–0.04 |
+| ALB | ~$0.0225/hr + LCU | $0.06–0.07 |
+| RDS `db.t4g.micro` + 20 GB gp3 | ~$0.016/hr | $0.04–0.05 |
+| **live burn subtotal** | **$0.127/hr** | **$0.32–0.38** |
+| Fargate eval task (2 vCPU / 8 GB, 11 m 48 s) | $0.1165/hr | $0.02 |
+| ECR storage, 2 secrets, S3, data transfer, LCUs | — | pennies |
+| **infrastructure total** | | **≈ $0.40–0.45** |
+
+So: **≈ $0.40–0.45 actual against a $2.20 estimate**, and the honest reading is not
+"came in 5× under budget." The per-hour rates in §8 were right — the live burn
+really was about $0.127/hr, which is what the table above multiplies. What was
+wrong was the *lifetime assumption*: the estimate budgeted a 12-hour day and the
+stack lived about three hours. **The pricing model was accurate; the duration model
+was 4× conservative.** That is a much less flattering and much more useful thing to
+know than a headline underspend.
+
+**Measured API spend is exact and dwarfs the infrastructure: $7.880494 + $8.007034 =
+$15.89** across both runs, comfortably inside the $20 budget on each and needing no
+`--yes` override. On a day like this the agents cost ~35× the servers.
+
+**On the billing evidence.** Fargate has no free tier, so a small line item *will*
+appear — with hours of lag. Day-of Cost Explorer was still blank when
+`evidence/billing-day-of.png` was captured, and that screenshot shows a month-to-date
+figure of $1.57 which is **not** this deployment's cost: it is account-wide rather
+than tag-filtered, and the same breakdown shows unrelated pre-existing S3, Amplify,
+Glue, DynamoDB and CloudWatch usage. Reporting "$1.57 actual vs $2.20 estimate"
+would have been the easy sentence and a false one. A corroborating screenshot can be
+added here once the line items populate; the computed figure above is the claim in
+the meantime, and it is stated as a computation, not a measurement.
+
+Leaving the stack up would have cost roughly $3.20/day. Don't; the artifact is the
+repo.
+
+---
+
+## Teardown, and three things it taught
+
+`terraform destroy` ran clean in one pass — the V13 flags (`force_delete` on both
+ECR repositories, `force_destroy` on the bucket, `recovery_window_in_days = 0` on
+both secrets) were set at the start precisely so teardown would not need a manual
+console sweep, and they worked. Full output in
+[`evidence/teardown-proof.txt`](evidence/teardown-proof.txt).
+
+**1. The tag-scan proof is weaker than the plan assumed.** §A6.3 specifies
+`aws resourcegroupstaggingapi get-resources --tag-filters Key=Project,Values=backline`
+returning an empty list as the receipt that nothing was orphaned. It does not return
+empty. After a successful destroy it still lists six ARNs:
+
+```
+arn:aws:ecs:us-west-2:675362625117:service/backline/ui
+arn:aws:ecs:us-west-2:675362625117:service/backline/api
+arn:aws:ecs:us-west-2:675362625117:task-definition/backline-api:1
+arn:aws:ecs:us-west-2:675362625117:task-definition/backline-eval:1
+arn:aws:ecs:us-west-2:675362625117:task-definition/backline-ui:1
+arn:aws:ecs:us-west-2:675362625117:cluster/backline
+```
+
+These are tombstones, not resources. The tagging index retains deleted ECS service
+records and deregistered task-definition revisions; a deleted ECS service lingers as
+`INACTIVE` rather than disappearing. The authoritative check is therefore
+per-service, and every one of them is empty:
+
+| check | result |
+|---|---|
+| `ecs describe-services --services api ui` | both `INACTIVE`, 0 running |
+| `ecs list-clusters` | `[]` |
+| `ecs list-task-definitions --status ACTIVE` | `[]` |
+| `rds describe-db-instances` | `[]` |
+| `elbv2 describe-load-balancers` | `[]` |
+| `ec2 describe-vpcs --filters is-default=false` | `[]` |
+| `ecr describe-repositories` | `[]` |
+| `secretsmanager list-secrets` | `[]` |
+| `ec2 describe-security-groups --filters tag:Project=backline` | `[]` |
+| `logs describe-log-groups --prefix /ecs/backline` | `[]` |
+
+A one-line tag scan is a nice idea for a teardown receipt and a bad one to trust
+unexamined: it answers "what does the tag index remember," not "what still exists."
+
+**2. Resource tags are not cost-filterable unless you activate them first.** The
+`Project` and `Ephemeral` tags exist on every resource, but AWS will not filter Cost
+Explorer by a tag until it has been activated as a **cost-allocation tag** in
+Billing — and activation is not retroactive. It was never activated, so the
+`Project = backline` cost view the plan assumed does not exist for this deployment.
+Attribution fell back to filtering by service, which is unambiguous *here* only
+because the material services — Fargate/ECS, ALB, RDS, ECR, Secrets Manager — had
+no prior usage in this account. (S3 and CloudWatch did have prior usage, but the
+deploy's share of those is pennies.) On an account with existing ECS or RDS
+workloads this fallback would not have worked, and the tags would have been
+decorative. Activate cost-allocation tags on day zero, before the resources exist.
+
+**3. `force_destroy` took the evidence bucket with it.** This one is a genuine
+own-goal, and it is in the plan's own design: the evidence bucket is a
+Terraform-managed resource with `force_destroy = true`, so `terraform destroy`
+deleted `backline-evidence-675362625117` along with everything in it — the eval
+artifacts *and* the 24 MB migration dump that §A3 archived there as provenance.
+`aws s3 ls` now returns `NoSuchBucket`.
+
+Nothing was actually lost, because the artifacts were committed to this repo as
+well, which is why `evidence/` exists. But the plan treated S3 as the durable
+archive and the repo as a convenience, and that was backwards: the bucket was
+inside the blast radius of the very command the plan ends with. An evidence store
+that a routine teardown deletes is not an evidence store. Production — or a second
+run of this exercise — puts evidence in a bucket outside the Terraform root module,
+or gives it `force_destroy = false` and a `prevent_destroy` lifecycle block, and
+accepts the manual cleanup as the price of durability.
 
 ---
 
@@ -409,6 +530,12 @@ cut rather than an oversight:
   automated backups, Multi-AZ, and a maintenance window.
 - **Observability:** CloudWatch alarms and a dashboard rather than `logs tail`, and
   ALB access logs actually queried rather than merely delivered.
+- **Cost governance:** `Project`/`Ephemeral` activated as **cost-allocation tags in
+  Billing before the first apply** — tags are not filterable in Cost Explorer
+  otherwise, and activation is not retroactive (see Teardown lesson 2).
+- **Durable evidence:** an artifacts bucket *outside* the Terraform root module, so
+  `terraform destroy` cannot delete the record of what was deployed (Teardown
+  lesson 3).
 
 ---
 
@@ -448,9 +575,12 @@ uv run python -m evals run --suite core --model claude-sonnet-5 --budget 20.00  
 deploy/aws/scripts/run_eval_task.sh                                              # AWS treatment
 deploy/aws/scripts/fetch_summary.sh                                              # artifacts out of RDS
 
-# 7. Tear it down and prove nothing was orphaned
+# 7. Tear it down, then verify per-service — NOT with the tag scan, which returns
+#    ECS tombstones after a clean destroy (see Teardown lesson 1). Note this also
+#    deletes the evidence bucket; commit anything you need to keep first.
 terraform -chdir=deploy/aws destroy
-aws resourcegroupstaggingapi get-resources --tag-filters Key=Project,Values=backline
+aws ecs list-clusters; aws rds describe-db-instances; aws elbv2 describe-load-balancers
+aws ec2 describe-vpcs --filters Name=is-default,Values=false
 ```
 
 `python -m backline.db.migrate` is intentionally absent from step 4 — see

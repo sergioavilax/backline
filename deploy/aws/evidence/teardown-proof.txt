@@ -1,0 +1,72 @@
+Backline AWS teardown verification
+region: us-west-2   account: 675362625117
+
+===============================================================
+1. The DESIGNED check: resource groups tagging API
+   aws resourcegroupstaggingapi get-resources \
+     --tag-filters Key=Project,Values=backline
+===============================================================
+[
+    "arn:aws:ecs:us-west-2:675362625117:service/backline/ui",
+    "arn:aws:ecs:us-west-2:675362625117:service/backline/api",
+    "arn:aws:ecs:us-west-2:675362625117:task-definition/backline-api:1",
+    "arn:aws:ecs:us-west-2:675362625117:task-definition/backline-eval:1",
+    "arn:aws:ecs:us-west-2:675362625117:task-definition/backline-ui:1",
+    "arn:aws:ecs:us-west-2:675362625117:cluster/backline"
+]
+
+   ^ NOT EMPTY - but these are tombstones, not live resources.
+     The tagging index retains deleted ECS service records and
+     deregistered task-definition revisions. Proven below.
+
+===============================================================
+2. The AUTHORITATIVE checks: per-service APIs
+===============================================================
+
+--- ECS services referenced above: status ---
+[
+    {
+        "name": "api",
+        "status": "INACTIVE",
+        "running": 0
+    },
+    {
+        "name": "ui",
+        "status": "INACTIVE",
+        "running": 0
+    }
+]
+
+--- ECS clusters ---
+[]
+
+--- ECS task definitions, ACTIVE only ---
+[]
+
+--- RDS instances ---
+[]
+
+--- Load balancers ---
+[]
+
+--- Non-default VPCs ---
+[]
+
+--- ECR repositories ---
+[]
+
+--- Secrets Manager secrets ---
+[]
+
+--- Security groups tagged Project=backline ---
+[]
+
+--- CloudWatch log groups under /ecs/backline ---
+[]
+
+===============================================================
+3. INTENTIONALLY RETAINED
+===============================================================
+--- S3 evidence bucket (survives destroy by design: it holds the
+    migration dump and the eval artifacts) ---
+  (none)
