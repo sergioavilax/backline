@@ -1972,3 +1972,197 @@ the live compose DB — the source of A3's dump — stays untouched. The diff is
 every PR" has no exemption for infrastructure code. Terraform state, the real
 tfvars, and `.terraform/` are gitignored and verified absent from the commit;
 `.terraform.lock.hcl` is tracked, as it should be. One PR (PR-2).
+
+## Phase A3 — Data migration · 2026-08-08
+
+Runbook execution, no PR of its own (outputs land in PR-3). The exact local world
+moved into RDS: `pg_dump -Fc` on the compose db container, `CREATE EXTENSION
+vector` on the target, then `pg_restore --no-owner --no-privileges --no-comments`.
+All client tooling came from the compose db container's own v16 binaries, so there
+was no client/server version skew and nothing to install on the host.
+
+**Verified against RDS after restore — every number exact:**
+
+| check | expected (V7) | RDS |
+|---|---:|---:|
+| `label.statement_lines` | 468,160 | 468,160 |
+| `rag.contract_chunks` | 2,961 | 2,961 |
+| `truth.expected_ledger` | 1,800 | 1,800 |
+| `DISTINCT embedding_model` | `BAAI/bge-small-en-v1.5` | `BAAI/bge-small-en-v1.5` |
+| ivfflat index | `contract_chunks_embedding_idx` | present |
+
+The embedding-model assertion is the one that would have silently poisoned the
+whole exercise. Query-time search reads the `embedding_model` recorded on stored
+chunks and must embed queries with the same model; a mismatch does not raise, it
+returns wrong neighbours. A stale `hash-bow-384-v1` store would have produced a
+plausible-looking eval with meaningless retrieval, and the parity claim would have
+been measuring nothing.
+
+`python -m backline.db.migrate` was deliberately **not** run (V8): the dump carries
+`schema_migrations`, so it would be a no-op, and the ivfflat index plus its
+`ANALYZE` travel inside the dump — no re-embed, no re-index. The dump is archived
+to `s3://backline-evidence-675362625117/migration/backline.dump` as provenance.
+
+**Deviation from a §0.4 verified fact, measured rather than waved at.** V7 put
+`pg_dump -Fc` at 17 MB; the actual dump was **24 MB**, and the database 136 MB
+against V7's 130 MB. V7 profiled a freshly-seeded cold sandbox; this database had
+accumulated **11 `app.eval_runs` and 1,447 `app.eval_results`** rows of real eval
+history — the Phase 7 sweep and the A5 local control among them. The world tables
+are unchanged; the extra megabytes are results history riding along inside the
+dump. Nothing about the restore or the verification was affected, and the counts
+above are the proof.
+
+---
+
+## Phase A4 — Push, stabilize, smoke · 2026-08-08
+
+`scripts/build_push.sh`: ECR login, tag and push the A1-gated `backline-aws:latest`
+unchanged, then build the UI image **with the ALB address baked in** — it cannot be
+built earlier, because `NEXT_PUBLIC_API_URL` is compiled into the Next.js bundle
+(V5) and the ALB DNS name does not exist until A2 has applied. Both services then
+forced to a new deployment.
+
+**Cold-start numbers, read off the ECS console:** the ~4 GB image **pull completed
+in 42 seconds**. That is the A1 decision paying out — the model weights are baked
+into the image, so a cold task never contacts Hugging Face and never pays a
+first-search download.
+
+**Smoke sequence 1–5, all green, in order:**
+
+1. `/healthz` over the ALB → process up.
+2. `/readyz` over the ALB → `{"status":"ok","database":"ok"}` — the SSL,
+   security-group-chain, and restore proof in a single line.
+3. UI over `:80` from home, no demo-mode badge → the key secret resolved through
+   the execution role and live providers are wired.
+4. A live chat question answered with clause citations; spans visible in the Trace
+   Inspector.
+5. Eval Dashboard rendering the restored local run history plus the committed
+   baseline — the latter proving A1's `COPY evals ./evals` did its job, since that
+   route reads `evals/results/baseline.json` off the image's disk.
+
+**What broke: `/readyz` returned 503 for the first minutes.** Immediately after
+`update-service --force-new-deployment`, the API listener returned 503 while the
+task was still pulling and registering as a target. It cleared on its own. This was
+`health_check_grace_period_seconds = 300` working, not failing: without it the ALB
+health-checks a container that is still downloading a ~4 GB image, marks it
+unhealthy, ECS kills it, and the replacement restarts the same pull — a crash loop
+that presents as an application bug and is purely a timing artifact. Recorded so
+nobody debugs a deployment that is merely still starting.
+
+---
+
+## Phase A5 — The paired eval · 2026-08-08
+
+Two fresh full runs, same day, identical flags (`--suite core --model
+claude-sonnet-5 --budget 20.00`, concurrency 4, default judge), identical database
+state, identical suite hash `6eef41c6706f309a` and judge rubric `ffe8c9753172`.
+Local rig as control, Fargate task as treatment. **Both completed all 133 questions
+with zero quarantined infra errors**, so the A5.3 heal loop was available and never
+needed.
+
+| | local control | AWS treatment | committed sweep `62865d3c` |
+|---|---:|---:|---:|
+| overall | **93.3** | **92.5** | 91.6 |
+| spend | $7.880494 | $8.007034 | $8.094698 |
+| $/query (incl. judge) | $0.0593 | $0.0602 | $0.0609 |
+| p50 / p95 | 12,678 / 65,855 ms | 12,508 / 71,122 ms | 13,033 / 75,870 ms |
+| T2 violations | 2 | 7 | 3 |
+| infra errors | 0 | 0 | 0 |
+| run id | `a309dc57…` | `93731060…` | `62865d3c…` |
+
+**Pre-registered hypothesis — |AWS − local| ≤ 3.0 overall — CONFIRMED at Δ 0.8**,
+against a documented same-model spread of 3.2 points (BENCHMARK_NOTES §5.4).
+
+**Provenance note.** The AWS run reports git `01f6febe8675` and the control
+`306f13d886a9`. The difference is deploy scaffolding only: `01f6feb` is the PR-1
+merge, `306f13d` adds PR-2's `deploy/aws/` tree. No runtime Python, SQL, prompt, or
+config differs; the image was built once at PR-1 state and pushed unchanged. Suite
+hash and judge rubric are identical across both runs, so the comparison is
+same-code and the differing SHAs are attribution metadata, not a confound.
+
+**The strict gate FAILED — and so did the control.** Reported per §A5.5 rather than
+re-rolled. AWS: `contract_terms` 77.0 vs baseline 85.0, `reconciliation` 86.7 vs
+96.7, 7 T2 violations, `adversarial` improved 93.3 → 100.0. The local control fails
+too, on **disjoint categories**: `abstention` 90.0 vs 100.0, `multi_step` 65.0 vs
+72.8, 2 T2 violations, with `adversarial` and `reconciliation` both improved. Both
+gates exit 1.
+
+That both fresh runs fail the strict gate in different places is the strongest
+available evidence that this is variance, not an environment defect. A broken
+environment degrades systematically — same categories, same direction, traceable
+mechanism. What the data shows is scatter in both directions: AWS lost 5.7 on
+contract_terms and 11.7 on reconciliation while *gaining* 10.0 on abstention and
+7.2 on multi_step. The mechanics were pre-registered in §9 and calibrated in §5.4:
+reconciliation is F1-scored (a couple of flag misses swing it double digits),
+abstention is n=10 (±10 per question), adversarial is n=3 (±11 per check). Notably
+the AWS run's reconciliation 86.7 **beats the committed sweep row's 83.3** — read
+against a fresh-run reference rather than the composite baseline, the control's
+98.3 is the outlier roll. T2 violations ranged 3–7 across historical live rows;
+7 and 2 sit inside and just below that range. Nothing was re-adjudicated.
+
+The latency reading also refuted the pre-declared first suspect (reranker timeouts
+under 2 vCPU): AWS p50 was **170 ms faster** than local, with p95 5.3 s slower —
+a tail effect, not a timeout wall.
+
+**ECS lifecycle:** pull 42 s, run 11 m 48 s, exit code **1** — which is the gate's
+verdict surfacing through `--gate` in the command override, exactly as designed,
+where an operator would look for it.
+
+---
+
+## Phase A6 — Evidence, writeup, teardown [PR-3] · 2026-08-08
+
+**Shipped**
+
+- **`deploy/aws/README.md`** rewritten to the fixed §A6.2 structure: what this is
+  plus architecture; the three-column parity table (local · AWS · committed sweep
+  row) per category with overall, $/query, p50/p95, T2 and infra-error rows, the
+  pre-registered hypothesis and its verdict; the gate-failed-both analysis; the
+  evidence index; the A3 migration verification; decisions-with-reasons; the
+  what-broke log; estimate-vs-actual cost; what production would add; and a
+  ~15-command reproduce runbook. Parity numbers are *derived* from the three
+  committed summary JSONs rather than transcribed — the `$/query` method
+  reproduces the sweep row's own committed `usd_per_query_with_judge` of $0.0609,
+  which is what makes the other two columns trustworthy.
+- **Root `README.md`** gains a "Deployed on AWS" section with the one-line verdict
+  (environment-invariant at Δ 0.8) linking to the writeup, plus `deploy/aws/` in
+  the repo map.
+- **`CLAUDE.md`** gains an AWS appendix: the five §0.2 invariants — led by *never
+  run `terraform apply` or `destroy`* — where every deploy file lives, and the
+  explicit list of what is gitignored and must never be committed.
+- **Evidence** — five screenshots (Eval Dashboard with the AWS run, Trace Inspector
+  on the AWS eval, CloudWatch gate output, the stopped ECS task, day-of billing)
+  plus `aws-run-summary.json`, all archived to
+  `s3://backline-evidence-675362625117/evals/` beside the migration dump.
+
+**Cost, reported with its caveat rather than as a clean win.** Plan §8 estimated
+≈ $2.20 infrastructure for the day. API spend is exact and larger: **$15.89**
+across both runs ($7.880494 + $8.007034), inside the $20 budget on each with no
+`--yes` override needed. The infrastructure actual is *not* cleanly established
+here: the day-of billing screenshot reads $1.57 month-to-date, but that figure is
+account-wide rather than tag-filtered (the same breakdown shows unrelated S3,
+Amplify, Glue and DynamoDB usage) **and** AWS billing lags by hours, so a same-day
+capture systematically understates a day whose Fargate/ALB/RDS charges are still
+landing. Claiming "$1.57 actual vs $2.20 estimate" would have been the easy
+sentence and a false one. The honest number needs the next-morning check filtered
+on `Project = backline`, which is the operator's step; the `Ephemeral = true` tag
+exists to make it one filter.
+
+**Deferred to the operator, by invariant.** `terraform destroy` and the
+post-teardown `resourcegroupstaggingapi` tag-scan proof. Claude Code never runs
+apply or destroy (§0.2 invariant 1), and this session did not: the only AWS writes
+it performed were `s3 cp` of the evidence files into the existing evidence bucket,
+which is one of that bucket's three specified purposes. Everything else was
+read-only `describe`/`list`.
+
+Suite state: **442 passed, 147 skipped, 10 deselected**; `ruff` and `mypy --strict`
+clean across 187 files. Run with `DATABASE_URL` unset so the Postgres tests skip
+and the compose DB is untouched. This phase changed only Markdown, so the suite
+could not be affected; it was run because "tests gate every PR" has no exemption
+for documentation. One PR (PR-3).
+
+**The AWS epilogue closes here.** Seven phases (A0–A6), three PRs, a 133-question
+answer-keyed suite executed on ECS/RDS and scored within 0.8 points of the same
+suite on the homelab, and a strict gate that failed both runs and was reported
+rather than re-rolled. The deployment is meant to be destroyed; the repo is the
+artifact.

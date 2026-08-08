@@ -1,188 +1,457 @@
 # Backline on AWS
 
-Backline — an agentic royalty-operations platform with a 133-question
-exact-ground-truth eval suite — deployed onto AWS with Terraform, its exact local
-world migrated into RDS, and the full suite re-run *on AWS infrastructure* to test
-whether the measured behaviour survives the change of environment.
+Backline is an agentic royalty-operations platform with a 133-question,
+exact-ground-truth eval suite. This directory deployed it onto AWS with Terraform,
+migrated the exact local world into RDS, and re-ran the full suite *on AWS
+infrastructure* as a one-off Fargate task to test whether the platform's measured
+behaviour survives a change of environment. The answer was yes, to within 0.8
+points — and the interesting part is how that number had to be read.
 
-The artifact is this directory, the parity table, and the "what broke" log. Not a
-running service: everything here was torn down the same day, on purpose.
-
-> **Status: Phase A2 complete.** The Terraform tree is written, `init`/`validate`
-> clean, and applied. Sections marked _(pending)_ below are filled in as A3–A6
-> execute. Nothing in this README is written ahead of the evidence.
+The artifact is this directory: the Terraform, the parity table, and the honest
+account of what happened. Not a running service. Everything was destroyed the same
+day, on purpose.
 
 ---
 
 ## Architecture
 
 ```
-                    ┌──────────────── your home IP /32 ────────────────┐
-                    │                                                  │
-                    ▼                                                  ▼
-              ALB :80  ──────────► backline-ui  (Fargate, 0.25 vCPU)
-              ALB :8000 ─────────► backline-api (Fargate, 1 vCPU / 8 GB)
-                    │                     │
-                    │                     ▼
-                    │              RDS Postgres 16 + pgvector
-                    │              (db.t4g.micro, force_ssl)
-                    │                     ▲
-                    └── backline-eval ────┘   one-off `aws ecs run-task`
-                        (2 vCPU / 8 GB)       no service, no load balancer
+                    ┌──────────────── operator home IP /32 ────────────────┐
+                    │                                                      │
+                    ▼                                                      ▼
+              ALB :80  ──────────► backline-ui   (Fargate, 0.25 vCPU / 0.5 GB)
+              ALB :8000 ─────────► backline-api  (Fargate, 1 vCPU / 8 GB)
+                                          │
+                                          ▼
+                                   RDS Postgres 16.13 + pgvector 0.8.x
+                                   (db.t4g.micro, encrypted, force_ssl)
+                                          ▲
+                    backline-eval ────────┘   one-off `aws ecs run-task`
+                    (2 vCPU / 8 GB)           no service, no load balancer
 ```
 
-Three security groups, chained: the internet reaches only the ALB, the ALB reaches
-only the services, the services reach only the database. There is no `0.0.0.0/0`
-ingress anywhere in `network.tf`.
+38 resources, one region (`us-west-2`), one root module. Three security groups
+chained so the internet reaches only the ALB, the ALB reaches only the services,
+and the services reach only the database — **there is no `0.0.0.0/0` ingress
+anywhere in `network.tf`.** Every ingress is either the operator's `/32` or another
+security group by id.
 
-## Layout
+---
 
-| File | What lives there |
+## The parity result
+
+**Design.** Two fresh full runs, same day, identical flags
+(`--suite core --model claude-sonnet-5 --budget 20.00`, concurrency 4, default
+judge), identical database state, identical suite hash (`6eef41c6706f309a`) and
+identical judge rubric (`ffe8c9753172`). One on the local rig (control), one as a
+Fargate task (treatment). The dump/restore is what makes this an experiment rather
+than an anecdote: holding DB state constant means the only variable is the runtime
+environment.
+
+**Pre-registered hypothesis**, written before either run started:
+
+> |AWS overall − local overall| ≤ 3.0 points — the same-model/same-suite noise
+> bound established in `docs/BENCHMARK_NOTES.md` §5.4 — with no category diverging
+> in a way that survives its small-n arithmetic.
+
+### Three columns, one suite
+
+| category | n | baseline | local control | **AWS treatment** | sweep `62865d3c` | AWS − local |
+|---|---:|---:|---:|---:|---:|---:|
+| catalog_lookup | 15 | 100.0 | 100.0 | 100.0 | 100.0 | 0.0 |
+| royalty_math | 25 | 100.0 | 100.0 | 100.0 | 100.0 | 0.0 |
+| recoupment_state | 15 | 100.0 | 100.0 | 100.0 | 100.0 | 0.0 |
+| cross_collateral | 8 | 100.0 | 100.0 | 100.0 | 100.0 | 0.0 |
+| sql_analytics | 10 | 100.0 | 100.0 | 100.0 | 100.0 | 0.0 |
+| adversarial | 3 | 93.3 | 100.0 | 100.0 | 100.0 | 0.0 |
+| abstention | 10 | 100.0 | 90.0 | **100.0** | 90.0 | **+10.0** |
+| multi_step | 12 | 72.8 | 65.0 | **72.2** | 67.8 | **+7.2** |
+| contract_terms | 20 | 85.0 | 82.7 | **77.0** | 81.0 | **−5.7** |
+| reconciliation | 15 | 96.7 | 98.3 | **86.7** | 83.3 | **−11.7** |
+| **overall** | **133** | **94.8** | **93.3** | **92.5** | **91.6** | **−0.8** |
+| | | | | | | |
+| spend | | | $7.880494 | $8.007034 | $8.094698 | |
+| $/query (incl. judge) | | | $0.0593 | $0.0602 | $0.0609 | |
+| latency p50 | | | 12,678 ms | **12,508 ms** | 13,033 ms | −170 ms |
+| latency p95 | | | 65,855 ms | 71,122 ms | 75,870 ms | +5,267 ms |
+| T2 violations | | | 2 | 7 | 3 | |
+| quarantined infra errors | | | **0** | **0** | 0 | |
+| git sha | | | `306f13d886a9` | `01f6febe8675` | `885505aa01ea` | |
+
+Run ids: local `a309dc57-b68e-4fbd-8591-38c2e7c63263` · AWS
+`93731060-f3f8-48d3-aa24-80bccf773733` · sweep
+`62865d3c-ee64-4801-bc6d-c22543e17b1b`.
+
+### Verdict: hypothesis CONFIRMED at Δ 0.8
+
+|92.5 − 93.3| = **0.8 points**, against a pre-registered bound of 3.0 and a
+documented same-model spread of 3.2. Both runs completed all 133 questions with
+**zero quarantined infra errors**, so no heal pass was needed and no row is
+carrying an outage in a model costume.
+
+The claim this supports, stated exactly as narrowly as the evidence allows:
+
+> The platform's measured behaviour is environment-invariant. A 133-question
+> exact-ground-truth suite scored within the pre-registered same-model noise bound
+> across a homelab and ECS/RDS, with database state held constant by migration.
+
+### Provenance note on the AWS image
+
+The AWS run reports git `01f6febe8675` and the local control `306f13d886a9`. Those
+are different commits, and the difference is *only* deploy scaffolding: `01f6feb`
+is the PR-1 merge (the deploy image), and `306f13d` adds PR-2's `deploy/aws/`
+Terraform tree. **No runtime Python, SQL, prompt, or config differs between them** —
+PR-2 touched `deploy/**` and `docs/PHASE_LOG.md` and nothing else. The image was
+built once at PR-1 state and pushed unchanged; the suite hash and judge rubric are
+byte-identical across both runs. The comparison is therefore same-code, and the
+differing SHAs are attribution metadata, not a confound.
+
+### The strict gate FAILED — on both runs, in different places
+
+This is the part worth reading carefully, because the honest reading is not the
+convenient one.
+
+```
+$ python -m evals gate --summary deploy/aws/evidence/aws-run-summary.json
+gate: FAIL
+  ✗ contract_terms: 77.0 vs baseline 85.0 (-8.0 pts > 3)
+  ✗ reconciliation: 86.7 vs baseline 96.7 (-10.0 pts > 3)
+  ✗ 7 T2 violation(s) — process assertions failed
+  · adversarial: improved 93.3 → 100.0
+```
+
+The strict gate compares a run against the composite baseline and fails any
+category down more than 3 points. It failed the AWS run. It also failed the local
+control:
+
+```
+$ python -m evals gate --summary data/evals/a309dc57-.../summary.json
+gate: FAIL
+  ✗ abstention: 90.0 vs baseline 100.0 (-10.0 pts > 3)
+  ✗ multi_step: 65.0 vs baseline 72.8 (-7.8 pts > 3)
+  ✗ 2 T2 violation(s) — process assertions failed
+  · adversarial: improved 93.3 → 100.0
+  · reconciliation: improved 96.7 → 98.3
+```
+
+**Both fresh runs fail the strict gate, on entirely disjoint categories.** That is
+the cleanest available evidence that the failures are variance rather than an AWS
+problem. A broken environment produces a systematic deficit — the same categories
+degrading, in the same direction, for a traceable mechanical reason. What actually
+happened is scatter in *both* directions: AWS lost 5.7 on contract_terms and 11.7
+on reconciliation, and *gained* 10.0 on abstention and 7.2 on multi_step. Noise
+scatters; breakage accumulates.
+
+The per-category mechanics were pre-registered in BENCHMARK_NOTES §9 and calibrated
+in §5.4, and they are exactly what this table shows:
+
+- **reconciliation is F1-scored**, so a couple of flag misses swing the category by
+  double digits. §5.4's own same-model pair moved it 96.7 → 83.3 (−1.51 weighted
+  overall) — the single largest contributor to the documented 3.2-point spread.
+  The AWS run's 86.7 sits *between* the baseline and that historical fresh run, and
+  **beats the committed sweep row's 83.3**. Read against the fresh-run reference
+  rather than the composite, the local control's 98.3 is the outlier roll, not the
+  AWS run's 86.7.
+- **abstention is n=10**, so one question is ±10 points. Baseline 100, sweep 90,
+  local 90, AWS 100 — the AWS run matched the baseline here and the local control
+  did not.
+- **adversarial is n=3**, so one T2 check is ±11. Both runs scored 100.0, *above*
+  the 93.3 baseline.
+- **T2 violations ranged 3–7 across historical live rows.** The AWS run's 7 is at
+  the top of that observed range, the local control's 2 just below it. There is
+  precedent for adjudicating these individually: the Phase 7 close-out resolved an
+  opus T2 miss as a *checker* false positive — a naive negation-unaware substring
+  match — with no model fault. Nothing here was re-adjudicated; the counts are
+  published as measured.
+
+Per §A5.5 this is reported, not re-rolled. One heal pass was available and not
+needed (zero infra errors). No run was repeated to get a nicer number, and both
+runs publish whatever they said.
+
+**What would have falsified the hypothesis**, stated so the claim is not
+unfalsifiable: an overall gap > 3.0; or a systematic one-directional degradation;
+or `TOOL_TIMEOUT_S` exhaustion on the reranker under 2 vCPU showing up as
+correlated failures in the retrieval-heavy categories. The first did not happen
+(Δ 0.8). The second did not happen (gains and losses both). The third did not
+happen — p50 latency on AWS was actually **170 ms faster** than local, with p95
+5.3 s slower, which is a tail effect and not a timeout wall.
+
+---
+
+## Evidence
+
+| File | What it shows |
 |---|---|
-| `versions.tf` | Terraform ≥ 1.9, AWS provider ~> 6.0 |
-| `providers.tf` | Region pin, `default_tags` (`Project`, `Ephemeral`) |
-| `variables.tf` | Every input, typed and described |
-| `network.tf` | VPC, 2 public subnets, IGW, route table, the 3-SG chain |
-| `rds.tf` | `db.t4g.micro` Postgres 16, `random_password` |
-| `ecr.tf` | Two repositories, `force_delete = true` |
-| `secrets.tf` | Two secrets, `recovery_window_in_days = 0` |
-| `alb.tf` | ALB, two target groups, two listeners |
-| `ecs.tf` | Cluster, three task definitions, two services |
-| `iam.tf` | Execution role (+ scoped secrets read), **empty** task role |
-| `logs.tf` | One log group, 7-day retention |
-| `s3.tf` | Evidence bucket (ALB logs · dump · eval artifacts) |
-| `outputs.tf` | Everything the runbook reads |
-| `scripts/` | `build_push.sh`, `run_eval_task.sh`, `fetch_summary.sh` |
+| `evidence/aws-run-summary.json` | The AWS run's summary row, pulled from `app.eval_runs` in RDS |
+| `evidence/evals-dashboard-aws-run.png` | The deployed Eval Dashboard showing the AWS run beside local history |
+| `evidence/trace-inspector-aws-eval.png` | The Trace Inspector on the AWS eval run — spans, tokens, cost |
+| `evidence/cloudwatch-gate-output.png` | The rendered summary table and gate verdict in CloudWatch Logs |
+| `evidence/ecs-eval-task-stopped.png` | The stopped eval task: 42 s pull, 11 m 48 s runtime, exit code 1 |
+| `evidence/billing-day-of.png` | Billing console, day of |
 
-One root module, one file per concern, no submodules. A second environment is when
-modules start earning their keep; there is exactly one here, and premature module
-extraction would make this tree harder to read for zero benefit.
+All of the above are also archived to `s3://backline-evidence-675362625117/evals/`,
+alongside the migration dump at `migration/backline.dump`.
+
+**The ECS lifecycle, read off the console:** image pull completed in **42 seconds**
+for a ~4 GB image — the baked model weights earning their place, since a cold
+Hugging Face fetch at task start would have added minutes and a network dependency.
+The task ran **11 m 48 s** and exited **1**. That exit code is not a failure of the
+deployment: `--gate` is in the command override, so the container's exit status
+*is* the gate's verdict, surfaced where an operator would look for it. A green
+deployment that exits non-zero because the thing it measured did not meet a
+threshold is the system working.
+
+---
+
+## Migration verification (A3)
+
+The dump/restore is the experimental control. Verified against RDS after
+`pg_restore`, matching the pre-migration local counts exactly:
+
+| check | expected | RDS |
+|---|---:|---:|
+| `label.statement_lines` | 468,160 | 468,160 |
+| `rag.contract_chunks` | 2,961 | 2,961 |
+| `truth.expected_ledger` | 1,800 | 1,800 |
+| `DISTINCT embedding_model` | `BAAI/bge-small-en-v1.5` | `BAAI/bge-small-en-v1.5` |
+| ivfflat index | `contract_chunks_embedding_idx` | present |
+
+The embedding-model check is not ceremony. Query-time search reads the
+`embedding_model` recorded on the stored chunks and must embed queries with the
+same model; a mismatch does not raise, it silently returns wrong neighbours — the
+worst possible failure mode for a retrieval eval. A stale `hash-bow-384-v1` store
+would have produced a plausible-looking run with meaningless retrieval.
+
+`python -m backline.db.migrate` was deliberately **not** run against RDS. The dump
+carries `schema_migrations`, so migrating would be a no-op; the ivfflat index and
+its `ANALYZE` travel inside the dump too, so there was no re-embed and no re-index.
+The dump is archived at `s3://backline-evidence-675362625117/migration/backline.dump`
+as provenance for exactly this claim.
+
+**One §0.4 number moved.** V7 measured `pg_dump -Fc` at 17 MB; the actual dump was
+**24 MB** (and the database 136 MB against V7's 130 MB). The cause is measured, not
+guessed: V7 profiled a *freshly seeded* cold sandbox, whereas this database had
+accumulated **11 `app.eval_runs` and 1,447 `app.eval_results`** rows of real eval
+history by the time it was dumped — including the Phase 7 sweep and the A5 local
+control. Nothing about the restore or the verification changed; the world tables
+are byte-for-byte what V7 described, and the extra 7 MB is the answer key's
+*results* history riding along, not the answer key itself.
+
+---
 
 ## Decisions with reasons
 
 **No NAT Gateway.** Tasks run in public subnets with public IPs and egress through
-the IGW. A NAT would add ~$32/month plus $0.045/GB to reach ECR and the Anthropic
-API — the only two things these tasks talk to outbound. At this scope and lifespan
-it buys nothing. Production, with private subnets, would use VPC endpoints for ECR
-and a NAT for the Anthropic egress.
+the IGW. A NAT would add ~$32/month plus $0.045/GB to reach the only two outbound
+destinations these tasks have — ECR and the Anthropic API. At this scope it buys
+nothing. Production, with private subnets, would use VPC endpoints for ECR and
+Secrets Manager and a NAT for the Anthropic egress.
 
 **Two listeners, not path routing.** The API serves at the root of its own
 namespace (`/sessions`, `/runs`, `/healthz`), and an ALB forwards paths verbatim
 rather than rewriting them — a `/api/*` rule would deliver `/api/sessions` to a
 server that only knows `/sessions`. Splitting by port gives both services one
-stable DNS name with no domain and no certificate, which is what makes the UI
-build possible at all: `NEXT_PUBLIC_API_URL` is baked into the Next.js bundle at
-build time, so the API's address has to be stable *before* the UI image exists.
+stable DNS name with no domain and no certificate. That stability is load-bearing:
+`NEXT_PUBLIC_API_URL` is baked into the Next.js bundle at build time, so the API's
+address must exist and be fixed *before* the UI image is built — which is why the
+UI image is built after `terraform apply`, not before.
 
 **Public RDS behind a /32.** The instance is publicly reachable so the migration
-can run from the operator's laptop straight into RDS. What makes that defensible
-is the security group: 5432 is open to exactly one `/32` and to the service SG,
+could run from the operator's laptop straight into RDS. What makes that defensible
+is the security group — 5432 open to exactly one `/32` and to the service SG,
 nothing else — plus a lifespan measured in hours. Production puts the database in
-private subnets and reaches it through an SSM tunnel; that costs an extra hop and
-a NAT or endpoint, which buys nothing for a one-day exercise.
+private subnets behind an SSM tunnel; that costs an extra hop and a NAT or
+endpoint, which buys nothing for a one-day exercise. Stated rather than hidden,
+because hiding it would be the actual mistake.
 
-**Empty task role.** Backline's agents talk to Postgres and to Anthropic. They
-call no AWS API at all. The role the application code can actually reach therefore
-has zero policies attached — the cheapest possible proof of least privilege, since
-there is no policy to audit. The *execution* role (used by the ECS agent, not by
-app code) holds the image pull, the log write, and a `GetSecretValue` scoped to
-exactly two secret ARNs.
+**Empty task role.** Backline's agents talk to Postgres and to Anthropic and call
+no AWS API at all. So the role the *application code* can reach was created with
+zero policies and stayed that way — verified post-apply, not asserted:
+`list-attached-role-policies` and `list-role-policies` both return `[]`. It is the
+cheapest possible least-privilege receipt: there is no policy to audit because
+there is no policy. The *execution* role (used by the ECS agent, not app code)
+holds the image pull, the log write, and a `GetSecretValue` scoped to exactly two
+secret ARNs.
 
 **Complying with `force_ssl` rather than disabling it.** RDS PostgreSQL 15+ sets
-`rds.force_ssl = 1` in the default parameter group. Instead of creating a custom
-parameter group to turn that off, the composed DSN carries `?sslmode=require`,
-which asyncpg parses and negotiates without any code change. Zero extra resources,
-and the better story.
+`rds.force_ssl = 1` in the default parameter group. Rather than create a custom
+parameter group to switch it off, the composed DSN carries `?sslmode=require`,
+which asyncpg parses and negotiates with no code change. Zero extra resources, and
+the better story.
 
-**Dump/restore as the experimental control.** The AWS eval is only interesting if
-the database is not a variable. Migrating the exact local world — same rows, same
-real bge embeddings, same ivfflat index, same answer key — holds DB state constant
-so the only thing that changes between the two runs is the runtime environment.
+**The key never touches Terraform.** `backline/anthropic-api-key` is created as an
+empty secret *shell*; the operator sets the value out of band with a
+leading-space CLI call. The key is therefore absent from the repo, from
+`terraform.tfstate`, and from every plan output. The `DATABASE_URL` secret is
+composed by Terraform from `.address` — never `.endpoint`, which already carries
+`:5432` and would silently yield `host:5432:5432`.
 
-## State honesty
+**Dump/restore as the experimental control.** See the parity section: holding
+database state constant is what makes the two runs comparable at all.
 
-`terraform.tfstate` is local, gitignored, and contains `random_password.db` and
-the composed `DATABASE_URL`. That is accepted for a one-day, one-operator,
-torn-down-same-day deployment. The production alternatives are real and named
-rather than implied: S3 remote state with SSE and DynamoDB locking, or
-`manage_master_user_password = true` to hand the credential to Secrets Manager and
-keep it out of state entirely. Pretending the tradeoff was not made would be worse
-than the tradeoff.
+**State honesty.** `terraform.tfstate` is local, gitignored, and contains
+`random_password.db` and the composed `DATABASE_URL`. That is accepted for a
+one-day, one-operator, torn-down-same-day deployment. The production alternatives
+are real and named rather than implied: S3 remote state with SSE and DynamoDB
+locking, or `manage_master_user_password = true` to hand the credential to Secrets
+Manager and keep it out of state entirely. Pretending the tradeoff was not made
+would be worse than the tradeoff.
 
-The Anthropic API key is *not* in state. Terraform creates an empty secret shell
-and the operator sets the value out of band, so the key never enters the repo, the
-state file, or any plan output.
+---
 
-## Runbook
+## What broke
 
-Prerequisites: the A0 checklist, and the A1 image built and gated
-(`docker build -f docker/aws.Dockerfile -t backline-aws:latest .`).
+Three things, and the honest summary is that this was a quiet deploy. That is not
+luck and it is not a claim of skill: the plan's §0.4 front-loaded fourteen verified
+facts by executing the repo in a cold sandbox *before* any AWS resource existed, so
+most of the discoverable failures were discovered on a laptop where they cost
+minutes. The failures below are the ones that survived that filter. Padding this
+section would be easy and would make it worthless.
 
-```bash
-cd deploy/aws
-cp terraform.tfvars.example terraform.tfvars   # fill in home_cidr + deployed_git_sha
+**1. `terraform plan` rejected three security-group descriptions (A2).**
 
-terraform init
-terraform validate
-terraform plan                                  # read it end to end
-terraform apply                                 # ~10 min, RDS is the long pole
+```
+Error: "ingress.0.description" doesn't comply with restrictions
+("^[0-9A-Za-z_ .:/()#,@\[\]+=&;{}!$*-]*$"):
+"API over HTTP from the operator's home IP only"
 ```
 
-Then, once:
+AWS does not allow apostrophes in security-group descriptions. Three of them said
+`the operator's home IP`; one also carried an em dash. Prose that reads well in a
+code comment is rejected at the API boundary.
+
+The subtlety that made this worth writing down: Terraform stopped at the *first*
+offending resource, so only two errors surfaced, while the `svc` and `rds` groups
+were never validated and had their own violations queued behind them. Fixing what
+the error reported would have produced a second failed plan, then a third. The fix
+was instead a small auditor that checks every `description` in the tree against
+that charset in one pass — which confirmed `network.tf` clean and correctly ignored
+the hits in `variables.tf`/`outputs.tf`, since local Terraform descriptions never
+reach the AWS API. The charset is now documented in a comment above the rules.
+
+**2. `/readyz` returned 503 for the first minutes after deploy (A4).**
+
+Immediately after `update-service --force-new-deployment`, `curl` against the API
+listener returned 503 while the task was still pulling its image and registering as
+a target. It cleared on its own once the target passed its health checks, and smoke
+steps 1–5 then went green in order, including `/readyz` over the ALB returning
+`{"status":"ok","database":"ok"}` — the SSL, security-group-chain, and restore
+proof in a single line.
+
+This was the `health_check_grace_period_seconds = 300` setting doing its job rather
+than a fault. Without it the sequence is genuinely destructive: the ALB starts
+health-checking a container that is still downloading a ~4 GB image, marks it
+unhealthy, ECS kills it, and the replacement restarts the same pull — a crash loop
+that presents as an application bug and is purely a timing artifact. Worth knowing
+that the 503 window is expected, so nobody spends twenty minutes debugging a
+deployment that is merely still starting.
+
+**3. The image was larger than the plan estimated (A1).**
+
+4.06 GB disk usage / 941 MB content size against §A1.2's "expect ~2.5–3.5 GB".
+Partly a units artifact — Docker 29 split the old single `SIZE` column into
+`DISK USAGE` and `CONTENT SIZE`, and the estimate was written against the old one —
+and partly a genuinely larger CPU torch. It was not a gate condition and cost
+nothing but push time, but it made §8's "ECR (~3.5 GB)" cost line light, and it is
+recorded here rather than quietly corrected.
+
+**Two things that look like failures and are not**, listed because both cost a
+double-take: the eval task's **exit code 1** is the gate's verdict surfacing
+through `--gate`, exactly as designed; and both ECS services sat **ACTIVE with 0
+running** between A2 and A4, which is correct — the ECR repositories were empty
+until the images were pushed.
+
+---
+
+## Cost: estimate vs actual
+
+Plan §8 estimated **≈ $2.20** of infrastructure for a ~12-hour day (Fargate $1.23 ·
+ALB $0.35 · RDS $0.25 · ECR/S3/Secrets/CloudWatch ~$0.35), plus API spend for the
+two eval runs.
+
+Measured API spend is exact and is the larger number: **$7.880494 + $8.007034 =
+$15.89** across both runs, comfortably inside the $20 budget on each and needing no
+`--yes` override.
+
+The infrastructure actual is the one number this writeup will not pretend to have
+nailed. The day-of billing screenshot shows a month-to-date figure of **$1.57**,
+but it is not a clean actual for two reasons worth stating plainly: it is
+**account-wide rather than tag-filtered**, so it includes unrelated pre-existing
+services visible in the same breakdown (S3, Amplify, Glue, DynamoDB); and **AWS
+billing lags by hours**, so a same-day screenshot systematically *understates* a
+day whose Fargate, ALB, and RDS charges are still landing. A clean estimate-vs-
+actual needs the next-morning check against `Project = backline` — which is the
+operator's step, and the AWS Budget at $25 is the backstop either way. The
+`Ephemeral = true` tag on every resource exists so that check is one filter, not an
+archaeology session.
+
+Leaving the stack up would cost roughly $3.20/day. Don't; the artifact is the repo.
+
+---
+
+## What production would add
+
+Named, not built, on purpose — each is a real gap and each was a deliberate scope
+cut rather than an oversight:
+
+- **Network:** private subnets, VPC endpoints for ECR/Secrets Manager/CloudWatch,
+  a NAT for Anthropic egress. Removes public IPs from tasks and public
+  accessibility from RDS entirely.
+- **TLS and DNS:** an ACM certificate, an HTTPS listener, a real domain. The `/32`
+  ingress lock is a substitute for authentication, and it is a substitute that only
+  works for one operator on one day.
+- **State:** S3 remote state with SSE and DynamoDB locking, or
+  `manage_master_user_password = true` so the database credential never enters
+  state at all.
+- **Delivery:** image builds and pushes driven by CI against a tagged commit, not a
+  laptop; task definitions rendered from the same pipeline.
+- **Scaling and resilience:** service autoscaling on ALB request count; RDS
+  automated backups, Multi-AZ, and a maintenance window.
+- **Observability:** CloudWatch alarms and a dashboard rather than `logs tail`, and
+  ALB access logs actually queried rather than merely delivered.
+
+---
+
+## Reproduce it
+
+Prerequisites: the A0 checklist (AWS account, Budget at $25, Terraform ≥ 1.9,
+Docker with BuildKit, home IP, Anthropic key), and a seeded local world whose
+`rag.contract_chunks` carries real bge embeddings.
 
 ```bash
- aws secretsmanager put-secret-value \
-   --secret-id backline/anthropic-api-key \
+# 1. Build and gate the deploy image (offline proof that weights are baked)
+docker build -f docker/aws.Dockerfile -t backline-aws:latest .
+docker run --rm -e HF_HUB_OFFLINE=1 backline-aws:latest \
+  uv run --no-sync python -c "import evals, pathlib; print(len(list(pathlib.Path('/data/inbox').glob('*'))))"
+
+# 2. Stand up the infrastructure
+cd deploy/aws && cp terraform.tfvars.example terraform.tfvars   # home_cidr + deployed_git_sha
+terraform init && terraform validate && terraform plan
+terraform apply                                                  # ~10 min; RDS is the long pole
+
+# 3. Set the key out of band (leading space keeps it out of shell history)
+ aws secretsmanager put-secret-value --secret-id backline/anthropic-api-key \
    --secret-string "$ANTHROPIC_API_KEY"
-```
 
-(leading space — it keeps the command out of shell history)
-
-```bash
-# A3 — migrate the world
+# 4. Migrate the world into RDS
 RDS_URL="$(terraform -chdir=deploy/aws output -raw database_url)"
 docker compose exec -T db pg_dump -Fc -U backline -d backline > deploy/aws/backline.dump
 docker compose exec -T db psql "$RDS_URL" -c "CREATE EXTENSION IF NOT EXISTS vector;"
-docker compose exec -T db pg_restore --no-owner --no-privileges --no-comments \
-  -d "$RDS_URL" < deploy/aws/backline.dump
+docker compose exec -T db pg_restore --no-owner --no-privileges --no-comments -d "$RDS_URL" < deploy/aws/backline.dump
 
-# A4 — push images, stabilise, smoke
+# 5. Push images (UI is built here, with the ALB address baked in) and smoke
 deploy/aws/scripts/build_push.sh
+curl -s "$(terraform -chdir=deploy/aws output -raw api_url)/readyz"   # {"status":"ok","database":"ok"}
 
-# A5 — the paired eval
-uv run python -m evals run --suite core --model claude-sonnet-5 --budget 20.00  # local control
-deploy/aws/scripts/run_eval_task.sh                                             # AWS treatment
-deploy/aws/scripts/fetch_summary.sh                                             # artifacts out of RDS
+# 6. The paired eval
+uv run python -m evals run --suite core --model claude-sonnet-5 --budget 20.00   # local control
+deploy/aws/scripts/run_eval_task.sh                                              # AWS treatment
+deploy/aws/scripts/fetch_summary.sh                                              # artifacts out of RDS
 
-# A6 — teardown
+# 7. Tear it down and prove nothing was orphaned
 terraform -chdir=deploy/aws destroy
 aws resourcegroupstaggingapi get-resources --tag-filters Key=Project,Values=backline
 ```
 
-`python -m backline.db.migrate` is deliberately **not** run against RDS. The dump
-includes `schema_migrations`, so migrating would be a no-op; the ivfflat index and
-its `ANALYZE` travel inside the dump as well, so there is no re-embed and no
-re-index either.
-
-## Migration verification _(pending — A3)_
-
-## Parity table _(pending — A5)_
-
-## What broke _(pending — written during the day, not reconstructed after)_
-
-## What production would add
-
-Private subnets with VPC endpoints for ECR/Secrets Manager and a NAT for outbound
-Anthropic traffic · ACM certificate and an HTTPS listener with a real domain ·
-remote state in S3 with locking · image builds and pushes driven by CI rather than
-a laptop · service autoscaling on ALB request count · RDS automated backups,
-Multi-AZ, and a maintenance window · CloudWatch alarms and a dashboard rather than
-`logs tail`. Each is named and not built on purpose: this deployment's job is to
-be read, run once, and destroyed.
-
-## Cost
-
-Roughly **$2.20** of infrastructure for a ~12-hour day (Fargate $1.23 · ALB $0.35 ·
-RDS $0.25 · ECR/S3/Secrets/CloudWatch ~$0.35), plus the eval API spend of the two
-runs. Leaving it up would cost about $3.20/day — don't; the artifact is the repo.
-Estimate-versus-actual lands here after teardown _(pending — A6)_.
+`python -m backline.db.migrate` is intentionally absent from step 4 — see
+[Migration verification](#migration-verification-a3).

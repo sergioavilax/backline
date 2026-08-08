@@ -253,6 +253,24 @@ them in place under the same run lineage
 ([D-032](docs/DECISIONS.md#d-032--infrastructure-errors-are-quarantined-never-scored---retry-errors-heals-them-in-place-post-phase-7)) —
 provider outages can no longer masquerade as model incapability.
 
+## Deployed on AWS
+
+The platform was deployed to AWS with Terraform (ECS Fargate + RDS/pgvector behind
+a two-listener ALB), the exact local world was migrated into RDS, and the **same
+133-question suite was re-run on AWS infrastructure** as a one-off Fargate task —
+then everything was destroyed the same day. The artifact is the Terraform tree and
+the parity table, not a running service.
+
+**Verdict: environment-invariant at Δ 0.8 overall** (local control 93.3 · AWS
+treatment 92.5 · committed sweep row 91.6), inside the pre-registered 3.0-point
+bound and the documented 3.2-point same-model spread, with zero quarantined infra
+errors on either run. The strict gate failed *both* fresh runs on disjoint
+categories — which is what variance looks like, and is reported rather than
+re-rolled.
+
+Full parity table, decisions, and the what-broke log:
+[deploy/aws/README.md](deploy/aws/README.md).
+
 ## Design tradeoffs
 
 Each one is a short story with alternatives and consequences in
@@ -363,6 +381,7 @@ benchmarks/     model sweep runner, report builder, sweep matrix, LOCAL.md
 ui/             Next.js app: Chat · Trace Inspector · Review Queue · Eval Dashboard
 migrations/     raw SQL, applied in filename order by backline.db.migrate
 config/         models.yaml — model ids, providers, context windows, dated prices
+deploy/aws/     Terraform root module + runbook scripts + the AWS parity writeup
 docs/           ARCHITECTURE · DECISIONS · PHASE_LOG · BENCHMARK_NOTES · TRACEABILITY · UI_DIRECTION · WORLD_AUDIT
 tests/          pytest suite (keyless by default; Postgres tests skip without DATABASE_URL)
 ```
