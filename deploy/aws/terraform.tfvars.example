@@ -1,0 +1,33 @@
+# Copy to terraform.tfvars (which is gitignored) and fill in the two required values.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+
+# REQUIRED. Your home IP as a /32. This is the only ingress on the ALB and the only
+# non-VPC ingress on RDS — it is what makes running a live Anthropic key behind a
+# public URL safe (§0.2 invariant 4). Get it with:
+#
+#   curl -s ifconfig.me
+#
+# If your ISP rotates it mid-day, everything times out from the browser at once.
+# Re-run the curl, edit this line, apply — it is a ~20 second security-group update.
+home_cidr = "203.0.113.7/32"
+
+# REQUIRED. The 12-char commit SHA being deployed. Injected as GITHUB_SHA so eval
+# rows written on AWS are attributable to the exact deployed commit (V11):
+#
+#   git rev-parse --short=12 HEAD
+deployed_git_sha = "0123456789ab"
+
+# ---------------------------------------------------------------------------
+# Everything below has a default and is shown only so the knobs are discoverable.
+# ---------------------------------------------------------------------------
+
+# region      = "us-west-2"
+# image_tag   = "latest"
+
+# api_cpu     = 1024   # 1 vCPU
+# api_memory  = 8192   # 8 GB — lazy torch + both retrieval models + pool headroom
+# ui_cpu      = 256
+# ui_memory   = 512
+# eval_cpu    = 2048   # 2 vCPU — concurrency-4 agent loops plus the CPU reranker
+# eval_memory = 8192
