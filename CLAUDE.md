@@ -78,3 +78,47 @@ World determinism: `tests/golden/world_fingerprint.json` pins the seeded world's
 hash. If a PR intentionally changes generation, regenerate it via
 `python -m datagen fingerprint --files > tests/golden/world_fingerprint.json` and say so
 in the PR; an unexplained golden diff means the answer key silently moved.
+
+---
+
+## Appendix — AWS deploy (`AWS_DEPLOY_PLAN.md`)
+
+The AWS epilogue is governed by [AWS_DEPLOY_PLAN.md](AWS_DEPLOY_PLAN.md), a companion
+to BUILD_PLAN with the same discipline: one session per phase (A0–A6), one PR per
+PR-marked phase, a `PHASE_LOG.md` entry per phase. **The deployment was executed and
+destroyed on 2026-08-08** — the artifact is the repo, not a running service. Its
+verdict lives in [deploy/aws/README.md](deploy/aws/README.md).
+
+**Invariants (AWS_DEPLOY_PLAN §0.2) — these bind every AWS session:**
+
+1. **Never run `terraform apply` or `terraform destroy`.** Claude Code writes `.tf`
+   files and may run `fmt`, `init`, `validate`, and `plan`. The human applies and
+   destroys, and reads every plan end to end first. This is not a formality: it is
+   the only control preventing an agent from creating billable or destructive cloud
+   state.
+2. **The Anthropic key never enters the repo, the Terraform state, or a task
+   definition's plain `environment` block.** It lives in Secrets Manager, is set by
+   the human out of band, and is injected via the ECS `secrets` (`valueFrom`)
+   mechanism. Terraform creates an empty secret shell and never learns the value.
+3. **Nothing existing is modified unless the plan explicitly says so.** The deploy is
+   additive — new files under `deploy/aws/`, one Dockerfile under `docker/`, docs.
+   Local dev keeps working identically.
+4. **Ingress is locked to the operator's home `/32`.** No `0.0.0.0/0` ingress on any
+   security group, ever. That lock is what makes a live key behind a public URL safe.
+5. **Parity is measured, not asserted.** Claims about AWS-vs-local behaviour cite the
+   repo's own documented noise floor (`docs/BENCHMARK_NOTES.md` §5.4). Both runs
+   publish whatever they say; a gate failure is reported and adjudicated, never
+   re-rolled until it passes.
+
+**Where the deploy files live:**
+
+- `deploy/aws/*.tf` — the Terraform root module, one file per concern.
+- `deploy/aws/scripts/` — `build_push.sh`, `run_eval_task.sh`, `fetch_summary.sh`.
+- `deploy/aws/evidence/` — the AWS run summary and the day's screenshots.
+- `deploy/aws/README.md` — the parity table, decisions, and the what-broke log.
+- `docker/aws.Dockerfile` (+ its per-Dockerfile `.dockerignore`) — the deploy image:
+  the API image plus `evals/`, baked HF model weights, and the baked deterministic
+  `/data`. Never edit `docker/api.Dockerfile` to serve a deploy need.
+- **Gitignored, never committed:** `deploy/aws/terraform.tfvars` (carries the
+  operator's home IP), `*.tfstate*`, `.terraform/`, `backline.dump`.
+  `.terraform.lock.hcl` *is* committed.
