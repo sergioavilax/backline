@@ -10,14 +10,13 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 
 # Dependency layer — cached until the lockfile changes.
-# The `embed` extra (sentence-transformers) is deliberately NOT installed: PyPI's
-# linux torch wheels are CUDA builds (~5 GB of image for a CPU-only stack), so the
-# init job runs `rag.embed --best-effort` (chunks + FTS always work) and full hybrid
-# embeddings build via host-side `make embed` — see docs/DECISIONS.md D-011. The
-# CPU-wheel re-lock is staged, commented out, in pyproject.toml (build sandboxes
-# cannot reach download.pytorch.org). To bake real models in, on a network that
-# reaches it: uncomment the pytorch-cpu index block there, run `uv lock`, and add
-# `--extra embed` to both `uv sync` lines below.
+# The `embed` extra (sentence-transformers) IS installed — the D-011 CPU re-lock
+# landed, so the lockfile resolves torch from the pytorch-cpu index
+# (download.pytorch.org/whl/cpu), not PyPI's ~5 GB CUDA builds. No model weights
+# are baked, though: bge-small + the ms-marco cross-encoder download from
+# Hugging Face on first use, and the init job's `rag.embed --best-effort` keeps
+# a cold boot without model egress fully working (chunks + FTS-only search).
+# See docs/DECISIONS.md D-011.
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project --extra embed
 
