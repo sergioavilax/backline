@@ -1728,3 +1728,107 @@ Suite state: **588 passed, 10 deselected (live)** in 220s against Postgres
 world — 16 new doc tests included; ruff and `mypy --strict` clean (187
 files); world fingerprint, committed suite, baselines, and results JSONs
 byte-untouched. One PR.
+
+## Phase A1 — The deploy image · 2026-08-08
+
+Session prompt: read `AWS_DEPLOY_PLAN.md` and `CLAUDE.md`, verify the on-disk
+world, then build and gate the A1 image from the file deliverables left by an
+earlier cloud session (branch `claude/aws-deploy-phase-a1-cr5uyd`, commit
+`23eb085`). Stop after PR-1. First phase of the AWS deploy plan, the companion
+to BUILD_PLAN's nine.
+
+**A two-machine phase.** The cloud session wrote the three A1 files correctly
+but had no Docker daemon, so it left them *unbuilt and ungated* — the one part
+of A1 that cannot be written, only executed. This session supplied that half on
+the local rig, where `./data` and Docker both exist. The file diff is byte-for-
+byte the cloud session's `23eb085`: nothing was rewritten to make the gate pass,
+which is the only way a gate means anything.
+
+**Shipped**
+
+- **`docker/aws.Dockerfile`** — the deploy image. Self-contained (does not
+  `FROM` the api image; repeats its steps so the file reads standalone), then
+  adds the three deploy deltas: `COPY evals ./evals` (V1 — the api image ships
+  neither the eval runner nor `evals/results/baseline.json`, so both the eval
+  task and the deployed dashboard's `/evals/baseline` route would have failed
+  on AWS); a build-time bake of bge-small + the ms-marco cross-encoder into
+  `HF_HOME=/opt/hf` (V2 — no weights are baked in the api image, so a cold
+  Fargate task would have reached for Hugging Face on first search); and
+  `COPY data /data` plus pre-created `/data/traces`, `/data/evals` (V3, V12).
+- **`docker/aws.Dockerfile.dockerignore`** — the mechanism that makes V3
+  possible. The root `.dockerignore` excludes `data`; BuildKit reads the ignore
+  file sitting next to the *named* Dockerfile, so this one omits `data` (and
+  excludes `data/traces` + `data/evals` so local trace history never ships)
+  without touching the root file or perturbing the api image's build context.
+- **`docker/api.Dockerfile`** — comment-only fix (§A1.4, permitted by deploy
+  invariant 3). The header still claimed the `embed` extra was "deliberately
+  NOT installed" and that the CPU-wheel re-lock was "staged, commented out,"
+  while both `uv sync` lines had carried `--extra embed` since the D-011
+  re-lock landed. Rewritten to describe reality and point at D-011. Zero
+  behavior change: every changed line is `#`-prefixed.
+
+**Pre-flight: the world verified, not assumed**
+
+The plan's A0 pre-flight guarantees `./data` is the seeded world; this session
+proved it rather than counting files. `datagen fingerprint --files` rebuilds the
+world in memory from `WORLD_SEED=20260805` and hashes every on-disk file:
+
+```
+combined: f7a0b87768632ee1dd46308e5900e2c1ca04a480e8bf2db6919c372c0f44c058
+```
+
+Identical to `tests/golden/world_fingerprint.json` and to V7 — **0 mismatches
+across 17 tables and all 842 files** (72 inbox drops, 385 contract PDFs, 385
+extracted `.txt`). Because the world was already correct, no regeneration was
+needed: **no scratch database was created and the live compose DB was never
+touched.** That mattered more than it looks — `datagen.dbload.load_world`
+truncates with `RESTART IDENTITY CASCADE`, so a casual re-seed against the live
+DB risks cascading into `rag.contract_chunks` and destroying exactly the bge
+embeddings that A0's V9 pre-flight demands and A3 will dump into RDS.
+
+**Build (§A1.2)**
+
+Clean build, exit 0. Three plan facts confirmed empirically along the way:
+build context transferred **31.89 MB** (the root `.dockerignore` excludes
+`data/`, so a context that size is proof BuildKit read the per-Dockerfile
+ignore file — V3); the lockfile resolved **`torch==2.13.0+cpu`**, the CPU wheel
+rather than PyPI's CUDA build (V2, and confirmation that the D-011 re-lock is
+real); and both model bakes downloaded and loaded (199 and 105 tensors).
+
+**Gate (§A1.3) — output verbatim**
+
+```
+A1 GATE: models offline OK · evals importable · baseline present · 72 inbox drops
+```
+
+Exit code 0, with `HF_HUB_OFFLINE=1` set. Corroborating detail worth recording:
+the *build* log emitted Hugging Face's "You are sending unauthenticated
+requests to the HF Hub" warning while downloading, and the *gate* run emitted no
+such line — the container reached the network zero times. The weights are
+genuinely baked, which is the whole claim.
+
+**Deviation: image size**
+
+`docker image ls` reports **4.06 GB disk usage / 941 MB content size**, against
+§A1.2's "expect ~2.5–3.5 GB". Partly a units artifact — Docker 29 splits the
+old single `SIZE` column into `DISK USAGE` and `CONTENT SIZE`, and the plan's
+estimate was written against the old column — and partly a genuinely larger
+torch. Not a gate condition (§A1.3 is the binary gate, and it passed), but two
+downstream numbers in the plan are now slightly light and should not surprise
+anyone later: A4's "~3 GB first push" to ECR will run longer, and §8's
+"ECR (~3.5 GB)" cost line is low. Still cents, not dollars.
+
+**Deferred**
+
+Everything past A1, per the session protocol: A2 (Terraform tree), A3 (dump /
+restore), A4 (push + smoke), A5 (the paired eval), A6 (evidence, writeup,
+teardown). No AWS account artifact was created, no credential was used, and no
+`terraform` command was run — this phase is entirely local by design, and the
+image has not been pushed anywhere.
+
+Suite state: **442 passed, 147 skipped, 10 deselected** in 19.7s, run with
+`DATABASE_URL` explicitly unset so the Postgres-backed tests skip and the live
+compose DB stays provably untouched (the 147 skips are exactly those). The diff
+contains no Python, SQL, or config, so the suite could not have been affected;
+it was run because deploy invariant "tests gate every PR" does not have an
+exemption for Dockerfiles. One PR (PR-1).
