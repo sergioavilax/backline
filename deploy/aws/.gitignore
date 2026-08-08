@@ -1,0 +1,19 @@
+# Real variable values — contains the operator's home IP. The .example is tracked.
+*.tfvars
+!terraform.tfvars.example
+
+# Provider plugins and lock-adjacent working state.
+.terraform/
+
+# Local state. It contains random_password.db and the composed DATABASE_URL —
+# see README "State honesty" for why that is accepted here and what production
+# would do instead.
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Saved plan files, if anyone writes one out.
+*.tfplan
+
+# The 17 MB pg_dump produced in A3. Provenance copy lives in S3, not in git.
+backline.dump
